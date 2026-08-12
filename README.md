@@ -1,7 +1,8 @@
 
 An EAC-compatible profile picture overlay mod which works with linux on wayland desktops :D
 PS: Check out [Rocket Spoof](https://github.com/xplodingeggo/rocketspoof) on my GitHub! It let's you spoof your display name on linux for Rocket League to whatever you like ;) There's also a windows version.
-Only works for 1440p at 75% Interface scale. I plan to add support for different interface scales first and then add support for 1080p
+--Only works for 1440p 16:9 at 75% Interface scale--. Works at 1440p at 50%, 75% and 100% interface scale. 75% is the most tried and tested and will work the best but 50% and 100% should work fine too. There is also support for other interface scales if you do ```rl-pfp start --ui-scale 69``` The number you put at the end should be the interface scale percentage in game.
+ I plan to add support for different interface scales first and then add support for 1080p
 <img width="2560" height="1440" alt="screenshot2" src="https://github.com/user-attachments/assets/5d8101b5-5bb9-472f-9f31-47d8ed038f5b" />
 
 <img width="2560" height="1440" alt="screenshot3" src="https://github.com/user-attachments/assets/6fbba6c6-22a4-4437-a38f-f1d6d92b5520" />
@@ -11,8 +12,8 @@ Only works for 1440p at 75% Interface scale. I plan to add support for different
 
 ### Requirements
 
-- A Wayland compositor with **`wlr-layer-shell` support** (Hyprland, Sway, and other wlroots-based compositors). I tested and made this for hyprland on arch linux, hopefully others should work fine but im not sure.
-  **Won't run under GNOME, KDE, or X11 sessions** — they don't implement this protocol. If you're on Ubuntu/Fedora and this doesn't work, it's probably because the default desktop is GNOME; installing Sway (packaged on most distros) or Hyprland alongside it will get you there. The overlay checks for this on startup and will tell you and exit instead of just crashing
+- A Wayland compositor with **`wlr-layer-shell` support** (Hyprland, Sway, and other wlroots-based compositors). I tested and made this for hyprland on arch linux, hopefully others should work fine but im not sure. Can probably work on KDE Plasma too.
+  **Won't run under GNOME, or X11 sessions** — they don't implement this protocol. If you're on Ubuntu/Fedora and this doesn't work, it's probably because the default desktop is GNOME; installing Sway (packaged on most distros) or Hyprland alongside it will get you there. The overlay checks for this on startup and will tell you and exit instead of just crashing
 - Python 3.10+
 - System packages for the overlay (not pip-installable):
 
