@@ -1,6 +1,11 @@
 An EAC-compatible profile picture overlay mod which works with linux on wayland desktops :D
 PS: Check out [Rocket Spoof](https://github.com/xplodingeggo/rocketspoof) on my GitHub! It let's you spoof your display name on linux for Rocket League to whatever you like ;) There's also a windows version.
-Only works for 1440p at 75% Interface scale. I plan to add support for different interface scales first and then add support for 1080p
+Works on any 16:9 display with any interface scale. I plan to add support for ultrawide soon.
+
+### Calibration note (important)
+
+For the interface scale, if you use any other scale other than 75%, make sure you start the tool like this:
+```rl-pfp start --ui-scale 67``` The number at the end should be your interface scale percentage in game
 <img width="2560" height="1440" alt="screenshot2" src="https://github.com/user-attachments/assets/5d8101b5-5bb9-472f-9f31-47d8ed038f5b" />
 
 <img width="2560" height="1440" alt="screenshot3" src="https://github.com/user-attachments/assets/6fbba6c6-22a4-4437-a38f-f1d6d92b5520" />
@@ -148,10 +153,6 @@ python3 -m rlpfp.rl_stats_bridge --verbose
 python3 -m rlpfp.gtk4_overlay --debug
 python3 -m rlpfp.controller_listener --list   # --list: print detected input devices and exit
 ```
-
-### Calibration note (important)
-
-Scoreboard and goal-replay avatar positions in `gtk4_overlay.py` are calibrated for **2560×1440 at 75% Rocket League UI scale**. I'm just going to hope thats what most of you play at anyways, otherwise I have no idea how to fix it. Maybe I'll do some work on it in a future update (never). On the bright side, im pretty sure the interface scale option scales linearly, so if we just find out the formula then we chillin
 
 # Q&A
 
