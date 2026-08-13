@@ -103,7 +103,7 @@ UI_SCALE = _load_ui_scale()
 # team_size = max(players on blue, players on orange), i.e. 1 for 1v1,
 # 2 for 2v2, 3 for 3v3, 4 for 4v4.
 ROW_HEIGHT = 56  # vertical spacing between rows within a team's section
-BOX_SIZE = 45  # size_px = 60 * UI_SCALE (linear, measured: 45@0.75, 60@1.0)
+BOX_SIZE = 48  # size_px = 64 * UI_SCALE (linear, confirmed: 32@0.5, 48@0.75, 64@1.0)
 SLOT_X = 714  # horizontal position — same for both teams, all sizes (probe-measured @ 0.75, 3v3)
 
 # How many pixels to shrink every avatar picture on each side (0 = off).
@@ -161,7 +161,7 @@ def get_scoreboard_slots(team_size: int) -> list:
 # Goal-scored nameplate avatar box.
 # Reverted to your last confirmed-good manual calibration.
 GOAL_NAMEPLATE_X_NUDGE = 3
-GOAL_NAMEPLATE_Y_NUDGE = -35.25
+GOAL_NAMEPLATE_Y_NUDGE = -36.25  # -1px uniform shift (all scales rendered 1px too low)
 _GOAL_NAMEPLATE_REFERENCE_SLOT = (
     1044 + GOAL_NAMEPLATE_X_NUDGE,
     1220 + GOAL_NAMEPLATE_Y_NUDGE,
@@ -285,10 +285,8 @@ SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
     #   y: 0.5 -> 596.5, 0.75 -> 553, 1.0 -> 510 (0.5 nudged -1 up in-game)
     "x": (0.0, -756.0, 1281.0),
     "y": (4.0, -179.0, 685.0),
-    # size: 32@0.5, 45@0.75 (trusted BOX_SIZE), 64@1.0 — all measured,
-    # quadratic. Earlier linear-extrapolated 0.5 guess (26px) was too
-    # small, confirmed wrong in-game.
-    "size": (48.0, -8.0, 24.0),
+    # size: 32@0.5, 48@0.75 (BOX_SIZE), 64@1.0 — exactly linear.
+    "size": (0.0, 64.0, 0.0),
 }
 # ROW_HEIGHT (spacing between scoreboard rows) fitted the same way, from
 # a 2-row screenshot at each of s=0.5 and s=1.0 (row1's top minus row0's
@@ -304,9 +302,10 @@ NAMEPLATE_UI_QUAD = {
     # x (delta form, zero at ref=0.75): 1.0 -> -77 (970 vs 1047 ref),
     # 0.5 -> +78 (nudged +1 right in-game, so target abs = 1125).
     "x": (8.0, -322.0, 237.0),
-    # y: 0.75 -> 1184.75 (trusted), 1.0 -> 1110 (measured), 0.5 -> 1257.5
-    # (nudged +1 down in-game) — quadratic, absolute form.
-    "y": (-16.0, -271.0, 1397.0),
+    # y: uniform -1px shift applied to every scale (whole curve rendered
+    # 1px too low, found via 65% check). 0.75 -> 1183.75, 1.0 -> 1109,
+    # 0.5 -> 1256.5 — quadratic, absolute form.
+    "y": (-16.0, -271.0, 1396.0),
     # size is linear: size_px = 100 * UI_SCALE at REFERENCE_RESOLUTION.
     # Confirmed: 0.75 -> 75px, 1.0 -> 100px (both measured exactly).
     "size": (0.0, 100.0, 0.0),
