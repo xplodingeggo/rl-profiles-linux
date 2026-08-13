@@ -121,7 +121,7 @@ SCOREBOARD_LAYOUTS = {
     # header instead of the "vaelixz." row). Starting point below is
     # measured from that screenshot; nudge with grid_measure.py if it's
     # not pixel-perfect for you.
-    3: {"blue": 490, "orange": 810},
+    3: {"blue": 490, "orange": 754},  # was 810, -1 ROW_HEIGHT: orange rendered a full row too low
     2: {"blue": 553, "orange": 756},  # blue re-measured with box_probe.py @ 0.75, was 550
     1: {"blue": 617, "orange": 761},
 }
@@ -297,7 +297,7 @@ SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
 #   s=0.50 -> 50px   [measured]
 #   s=0.75 -> 56px   (existing baseline)
 #   s=1.00 -> 73px   [measured]
-ROW_HEIGHT_QUAD = (88.0, -86.0, 71.0)
+ROW_HEIGHT_QUAD = (88.0, -86.0, 72.0)  # c0 +1: uniform +1px row spacing, all scales
 NAMEPLATE_UI_QUAD = {
     # x (delta form, zero at ref=0.75): 1.0 -> -77 (970 vs 1047 ref),
     # 0.5 -> +78 (nudged +1 right in-game, so target abs = 1125).
