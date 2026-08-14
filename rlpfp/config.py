@@ -3,7 +3,8 @@ Config discovery/init.
 
 Reuses the exact same file this project already has:
   ~/.config/rl-pfp-overlay/config.json — steam_api_key, psn_npsso,
-  xbox_api_key, bridge_venv_python, avatar_overrides
+  xbox_api_key, bridge_venv_python, avatar_overrides,
+  epic_placeholder_disabled
 Env vars STEAM_API_KEY / PSN_NPSSO / XBOX_API_KEY still take priority,
 unchanged (see pfp_resolver.py) — this module doesn't alter that
 precedence, it just helps get the file populated in the first place.
@@ -152,7 +153,35 @@ def edit_interactive() -> None:
     else:
         print("\nNo changes.")
 
+    _edit_epic_placeholder_interactive(config)
     _edit_avatar_overrides_interactive(config)
+
+
+def _edit_epic_placeholder_interactive(config: dict) -> None:
+    """Epic has no public avatar API, so by default Epic players show a
+    generic placeholder image instead of blank. Some people would rather
+    just let RL's own built-in default picture show for Epic players —
+    this toggles that off/on. Boolean, so it doesn't fit the _FIELDS
+    text-input loop above."""
+    current = bool(config.get("epic_placeholder_disabled"))
+    print("\n--- Epic placeholder image ---")
+    print(
+        "Epic has no public avatar API, so Epic players show a generic "
+        "placeholder image by default. Disable this to fall back to RL's "
+        "own built-in default picture instead."
+    )
+    if current:
+        answer = input("Currently disabled (RL default picture used). Re-enable placeholder? [y/N]: ").strip().lower()
+        if answer in ("y", "yes"):
+            config["epic_placeholder_disabled"] = False
+            _save_config(config)
+            print("Saved: Epic placeholder re-enabled.")
+    else:
+        answer = input("Currently enabled (placeholder shown). Disable placeholder? [Y/n]: ").strip().lower()
+        if answer in ("", "y", "yes"):
+            config["epic_placeholder_disabled"] = True
+            _save_config(config)
+            print("Saved: Epic placeholder disabled.")
 
 
 def _edit_avatar_overrides_interactive(config: dict) -> None:

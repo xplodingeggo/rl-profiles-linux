@@ -146,6 +146,11 @@ class PFPResolver:
         raw_overrides = self.config.get("avatar_overrides", {})
         self.avatar_overrides = raw_overrides if isinstance(raw_overrides, dict) else {}
 
+        # Epic placeholder can be turned off in `rl-pfp config` for anyone
+        # who'd rather Epic players fall back to RL's built-in default
+        # picture than see the generic placeholder.
+        self.epic_placeholder_disabled = bool(self.config.get("epic_placeholder_disabled"))
+
         self.session: Optional[aiohttp.ClientSession] = None
         self.cache_dir = CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -558,6 +563,10 @@ class PFPResolver:
             # Xbox typically needs gamertag, not a numeric ID.
             return await self.get_xbox_pfp(username or platform_id)
         elif "epic" in platform:  # "Epic", "EpicGames", etc.
+            if self.epic_placeholder_disabled:
+                # Opted out via `rl-pfp config` — fall back to RL's own
+                # default picture instead of the generic placeholder.
+                return None
             # Epic has no public avatar API. Return a placeholder so Epic
             # players show *something* instead of blank.
             placeholder = self.cache_dir / "epic_placeholder.png"
