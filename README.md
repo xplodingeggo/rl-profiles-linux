@@ -134,7 +134,7 @@ python3 -m rlpfp.controller_listener --list   # --list: print detected input dev
 # Q&A
 
 ## Q: Is this free/open source
- A: Yes. I hate working on this though I have ptsd so i need all the help i can get. You can create forks or branches for your own distro/DE I think that would be good. I'm honestly new to github so i apologize if stuff is not structured right. You can ask me questions on github or discord or wherever and i might be able to help. I didn't code this but I did have to spend hours configuring the overlay to just align correctly
+ A: Yes. You can create forks or branches for your own distro/DE I think that would be good. I'm honestly new to github so i apologize if stuff is not structured right. You can ask me questions on github or discord or wherever and i might be able to help. I didn't code this but I did have to spend hours configuring the overlay to just align correctly and understanding how StatsAPI works
 
 ## Q: Which file does what?
 A: 
@@ -153,7 +153,7 @@ PlayerJoined: YourName (Epic|61a21e5cbca9481e8b19b944f792d778/0)
 
 Plug in the platform (`epic`) and ID, point it at your image, and it's saved to `config.json` — no code editing needed. I plan to add a CDN later at some point if this gets enough users/requests, probably using cloudflare R2 buckets so that you can see other's profiles
 ## Q: Why can't i see the profile of Switch users?
-A: Short answer, Nintendo is gay
+A: Short answer, Nintendo is bitch
 Long answer, Nintendo doesn't expose a public API to fetch player avatars from their accounts, unlike Steam (Steam Web API), PlayStation (PSN's profile endpoint), and Xbox (OpenXBL). Without a public endpoint, there's no way to fetch them programmatically. There used to be unofficial apis for nintendo but they are down now after nintendo made some server side changes
 ## Q: Why is the profiles all over the place at the start of a game?
 A: I dont know, but by the time one or 2 of the players on a team get some score it should fix
@@ -165,8 +165,7 @@ A: It works fine as long as they dont obstruct the main part of the box. Alot of
 Interstellar.
 
 # Whats next/Roadmap
-1. Support for different interface scales
-2. Support for 1080p
-3. fix the orange team push down one row bug[https://github.com/xplodingeggo/rl-profiles-linux/issues/1] 
-4. Profile pictures in main menu, after game end, tournament ready up screen - will most likely require new detection methods which i currently dont know yet maybe like text scanning
-5. Public CDN for epic games profile pictures (you can see other epic game users people who use this mod)
+
+
+1. Profile pictures in main menu, after game end, tournament ready up screen - will most likely require new detection methods which i currently dont know yet maybe like text scanning
+2. Public CDN for epic games profile pictures (you can see other epic game users people who use this mod)
