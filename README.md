@@ -76,26 +76,12 @@ You'll also need the Stats API enabled in Rocket League itself. See the next sec
 ## Stats API Setup
 
 Before you run `rl-pfp start`, you need to enable Rocket League's Stats API. This is what the overlay uses to know who's in the match and when goals are scored.
-
-Since RL on Linux runs through a Wine/Proton prefix, the config file isn't in the game's install directory — it's inside your prefix, under whichever Windows "user" your setup uses. That varies by launcher:
-
-- If you're running through Steam's Proton runtime, the user is usually `steamuser`.
-- If you're running through Heroic, Lutris, or a custom Wine prefix, it might be `steamuser` too (if you set it up that way) or your actual Linux username, depending on how the prefix was created.
-
-Example (mine, via Heroic):
+Find the `DefaultStatsAPI.ini` which is in the actual game installation folder itself (not the prefix), e.g.:
 
 ```
-/home/xplodingeggo/Games/Heroic/Prefixes/rocketleague/pfx/drive_c/users/steamuser/Documents/My Games/Rocket League/TAGame/Config/
+/mnt/game/Games/rocket/rocketleague/TAGame/Config/
 ```
-I have the steam runtime enabled in heroic which is why it falls under 'steamuser' and not 'xplodingeggo'
-The general shape is:
-
-```
-<your prefix>/drive_c/users/<user>/Documents/My Games/Rocket League/TAGame/Config/
-```
-If its not their you can have a look around until you find it. These prefix structures can get confusing.
-
-Open (or create) `TAStatsAPI.ini` in that folder and paste this in:
+change it to this
 
 ini
 
@@ -108,22 +94,13 @@ WebPort=49124
 
 Then **restart Rocket League** — changes only take effect after a full restart.
 
-There's also a `DefaultStatsAPI.ini` sitting in the actual game installation folder itself (not the prefix), e.g.:
-
-```
-/mnt/game/Games/rocket/rocketleague/TAGame/Config/
-```
-
-If the prefix config above doesn't seem to take effect, try checking/editing that one too. I'm honestly not 100% sure how the two interact, but both exist and both are worth knowing about.
 
 The bridge looks for connections on `127.0.0.1:49123`, so if you use a different port, change `49123` in `rl_stats_bridge.py` too (but you probably don't need to).
 
 If the bridge logs say "Stats API not reachable" or "connection refused," the most common reasons are:
 
 - You didn't restart RL after editing the config
-- You edited the config in the wrong prefix/user folder
 - RL is running but the Stats API didn't actually start (check your RL logs)
-***TL;DR If you have setup bakkesmod before its that same place just in the documents folder instead of AppData***
 ### Running
 
 ```bash
