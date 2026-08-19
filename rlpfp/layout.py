@@ -79,13 +79,24 @@ SCOREBOARD_LAYOUTS = {
 
 SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
     "x": (0.0, -756.0, 1281.0),
-    "y": (4.0, -179.0, 685.0),
+    # y refit on Windows: confirmed via a real 2560x1440/100% scoreboard
+    # screenshot that the old curve rendered avatars 36px too high at
+    # s=1.0 (510 vs the correct 546) — refit through the SAME trusted
+    # s=0.5 (596.5) and s=0.75 (553) points, only replacing the s=1.0
+    # point (510 -> 546). Old curve: (4.0, -179.0, 685.0).
+    "y": (292.0, -539.0, 793.0),
     "size": (0.0, 64.0, 0.0),
 }
 ROW_HEIGHT_QUAD = (88.0, -86.0, 72.0)  # c0 +1: uniform +1px row spacing, all scales
 NAMEPLATE_UI_QUAD = {
     "x": (8.0, -322.0, 237.0),
-    "y": (-16.0, -271.0, 1396.0),
+    # y refit on Windows: confirmed via a real 2560x1440/100% goal-replay
+    # screenshot that the old curve rendered the nameplate avatar 40px
+    # too high at s=1.0 (1109 vs the correct 1149) — refit through the
+    # SAME trusted s=0.5 (1256.5) and s=0.75 (1183.75) points, only
+    # replacing the s=1.0 point (1109 -> 1149). Old curve:
+    # (-16.0, -271.0, 1396.0).
+    "y": (304.0, -671.0, 1516.0),
     "size": (0.0, 100.0, 0.0),
 }
 
