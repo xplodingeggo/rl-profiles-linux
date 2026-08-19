@@ -1,15 +1,17 @@
 #!/bin/bash
-# Watches Hyprland for Rocket League's window and starts/stops
+# Watches for Rocket League's actual game process and starts/stops
 # `rl-pfp start` to match — run as a systemd --user service so it's
 # always alive in the background, independent of Heroic/Steam/however
-# RL gets launched. Matches the same class/title substrings as
-# RL_WINDOW_MATCH_CANDIDATES in rlpfp/gtk4_overlay.py.
+# RL gets launched, and independent of Hyprland (no hyprctl call here —
+# gtk4_overlay.py still uses hyprctl on its own for window geometry,
+# that's unrelated). Matches the real Proton process name
+# "RocketLeague.exe", not the launcher/wrapper processes around it
+# (Launcher.exe, steam.exe, python's waitforexitandrun, etc).
 
 PFP_PID=""
 
 is_rl_running() {
-    hyprctl clients -j 2>/dev/null \
-        | grep -qiE '"class": ?"[^"]*rocket ?league[^"]*"|"title": ?"[^"]*rocket ?league[^"]*"'
+    pgrep -f "RocketLeague\.exe" >/dev/null 2>&1
 }
 
 while true; do
