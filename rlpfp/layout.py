@@ -86,11 +86,11 @@ SCOREBOARD_LAYOUTS = {
     # was never independently measured, treat its value as unconfirmed
     # too until checked the same way.
     # 3v3 blue: user confirmed it renders 16px too low — moved to 474
-    # (was 490), then a further -2px nudge to 472. Orange in the same
-    # lobby size renders correctly at every row with the current
+    # (was 490), then -2px to 472, then -1px more to 471. Orange in the
+    # same lobby size renders correctly at every row with the current
     # ROW_HEIGHT_QUAD, so this is a row0 base-value fix only, not a
     # spacing issue.
-    3: {"blue": 472, "orange": 822},  # was 490, then 474, then 472
+    3: {"blue": 471, "orange": 822},  # was 490, then 474, 472, 471
     2: {"blue": 553, "orange": 812},  # was 756
     1: {"blue": 617, "orange": 761},
 }
