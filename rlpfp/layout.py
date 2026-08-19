@@ -78,24 +78,28 @@ SCOREBOARD_LAYOUTS = {
 }
 
 SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
-    "x": (0.0, -756.0, 1281.0),
-    # y refit on Windows: confirmed via a real 2560x1440/100% scoreboard
-    # screenshot that the old curve rendered avatars 36px too high at
-    # s=1.0 (510 vs the correct 546) — refit through the SAME trusted
-    # s=0.5 (596.5) and s=0.75 (553) points, only replacing the s=1.0
-    # point (510 -> 546). Old curve: (4.0, -179.0, 685.0).
-    "y": (292.0, -539.0, 793.0),
+    # x/y refit on Windows: team_size=2 blue row0 target at s=1.0 is
+    # x=526, y=547 (a +1/+1 nudge on top of the earlier y-only 36px
+    # correction — x had never been touched before this). Refit through
+    # the SAME trusted s=0.5/s=0.75 points from the original Linux
+    # calibration, only replacing the s=1.0 target each time. Original
+    # (pre-Windows) curves: x=(0.0,-756.0,1281.0), y=(4.0,-179.0,685.0).
+    "x": (8.0, -766.0, 1284.0),
+    "y": (300.0, -549.0, 796.0),
     "size": (0.0, 64.0, 0.0),
 }
 ROW_HEIGHT_QUAD = (88.0, -86.0, 72.0)  # c0 +1: uniform +1px row spacing, all scales
 NAMEPLATE_UI_QUAD = {
     # x/y refit on Windows: box_probe-measured target at s=1.0 is
-    # x=969, y=1149 (967/1147 + a final +2/+2 manual nudge). Refit
-    # through the SAME trusted s=0.5/s=0.75 points from the original
-    # Linux calibration, only replacing the s=1.0 target. Original
-    # (pre-Windows) curves: x=(8.0,-322.0,237.0), y=(-16.0,-271.0,1396.0).
-    "x": (0.0, -312.0, 234.0),
-    "y": (296.0, -661.0, 1513.0),
+    # x=970, y=1150 (a +1/+1 nudge on top of the prior 969/1149 pass).
+    # Refit through the SAME trusted s=0.5/s=0.75 points from the
+    # original Linux calibration, only replacing the s=1.0 target each
+    # time. Original (pre-Windows) curves: x=(8.0,-322.0,237.0),
+    # y=(-16.0,-271.0,1396.0) — note the x curve landed back on its
+    # original value here, since the net nameplate x adjustment across
+    # all passes summed to zero.
+    "x": (8.0, -322.0, 237.0),
+    "y": (304.0, -671.0, 1516.0),
     "size": (0.0, 100.0, 0.0),
 }
 
