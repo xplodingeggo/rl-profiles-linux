@@ -161,7 +161,7 @@ def get_scoreboard_slots(team_size: int) -> list:
 # Goal-scored nameplate avatar box.
 # Reverted to your last confirmed-good manual calibration.
 GOAL_NAMEPLATE_X_NUDGE = 3
-GOAL_NAMEPLATE_Y_NUDGE = -36.25  # -1px uniform shift (all scales rendered 1px too low)
+GOAL_NAMEPLATE_Y_NUDGE = -35.25  # nudged back down 1px from prior -1px shift
 _GOAL_NAMEPLATE_REFERENCE_SLOT = (
     1044 + GOAL_NAMEPLATE_X_NUDGE,
     1220 + GOAL_NAMEPLATE_Y_NUDGE,
