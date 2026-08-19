@@ -82,10 +82,21 @@ _FIELDS = [
         False,
     ),
     (
-        "scoreboard_button_windows", None, "Controller button for scoreboard toggle (Windows)",
+        "scoreboard_button_windows", None, "Controller button for scoreboard toggle (Windows, XInput)",
         "XInput button name, e.g. BACK (View/Share) — defaults to LEFT_THUMB "
-        "(L3) if left blank. Run `python -m rlpfp.win_controller --detect` "
-        "and press the button you want to find its exact name first",
+        "(L3) if left blank. Only used when your controller is found via "
+        "XInput (a real Xbox pad, or Steam Input set to Xbox emulation). "
+        "Run `python -m rlpfp.win_controller --detect` and press the "
+        "button you want to find its exact name first",
+        False,
+    ),
+    (
+        "scoreboard_button_dinput_index", None, "Controller button index (Windows, DirectInput fallback)",
+        "a plain number, e.g. 2 — only used when your controller is NOT "
+        "found via XInput (a raw DirectInput/dinput pad, e.g. many "
+        "controllers when Steam Input isn't remapping them to Xbox "
+        "emulation). Not set by default. Run `python -m rlpfp.win_controller "
+        "--detect` and press the button you want to find its index first",
         False,
     ),
     (
