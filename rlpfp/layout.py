@@ -101,7 +101,7 @@ SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
     "y": (308.0, -559.0, 799.0),
     "size": (0.0, 64.0, 0.0),
 }
-ROW_HEIGHT_QUAD = (88.0, -86.0, 72.0)  # c0 +1: uniform +1px row spacing, all scales
+ROW_HEIGHT_QUAD = (88.0, -86.0, 74.0)  # c0 +3 total: +1 from original Linux calibration, +2 more on Windows — row1/row2/row3 have no calibration point of their own (pure ROW_HEIGHT_QUAD math), and were rendering too close together at every scale; same uniform-shift approach as the original +1
 NAMEPLATE_UI_QUAD = {
     # x/y refit on Windows: box_probe-measured target at s=1.0 is
     # x=969, y=1150 (final -1px x nudge on top of the prior 970/1150
