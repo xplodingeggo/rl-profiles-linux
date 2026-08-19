@@ -1,0 +1,391 @@
+#!/usr/bin/env python3
+"""
+Windows overlay window — Tkinter + Win32, no GTK/Wayland involved.
+
+Same job as gtk4_overlay.py, ported: renders player profile pictures on
+top of Rocket League while it's the focused window.
+  1. Goal-scored nameplate avatar — shown for a few seconds after
+     the GoalScored event, at the "SCORED BY" nameplate position.
+  2. Scoreboard avatars — shown next to each player row while the
+     scoreboard is visible (driven by win_controller.py's button press).
+
+Slot positions come from layout.py — the SAME calibration data
+gtk4_overlay.py uses, measured on Linux at 2560x1440/75% UI scale. RL is
+the same game engine/UI on both OSes, so those reference pixel positions
+should transfer directly; only the window-geometry input differs (win32
+GetWindowRect here vs hyprctl there). If alignment looks off on your
+setup, use `rl-pfp probe` / `rl-pfp grid` (win32 versions) to check.
+
+How the window works, since Tkinter alone can't do this:
+  - Borderless, always-on-top, sized to the virtual screen.
+  - `-transparentcolor` (a Windows-only Tk attribute) makes one exact
+    RGB color fully transparent — we pick an color so unlikely to occur
+    in a real avatar that a false-transparent pixel is a non-issue
+    (TRANSPARENT_KEY below), and composite every avatar image onto a
+    background of that color before displaying it (see _load_avatar).
+  - WS_EX_LAYERED | WS_EX_TRANSPARENT (set via ctypes after the window
+    exists) makes the ENTIRE window click-through, so mouse input always
+    reaches Rocket League underneath — same effect as the empty
+    cairo.Region() input-region trick on Linux.
+
+Requires:
+  pip install pywin32 Pillow requests
+  (Pillow: for RGBA compositing avatar images onto the transparent-color
+  background; pywin32: win32gui/win32con for the click-through + focus/
+  geometry win32 calls; Tkinter itself ships with the standard Windows
+  Python installer.)
+
+Run (with rl_stats_bridge.py already running):
+  python -m rlpfp.win_overlay
+"""
+
+from __future__ import annotations
+
+import argparse
+import ctypes
+import logging
+import threading
+import time
+import tkinter as tk
+from pathlib import Path
+
+from PIL import Image, ImageTk
+
+import win32api
+import win32con
+import win32gui
+
+from .layout import (
+    GOAL_NAMEPLATE_DURATION_SECONDS,
+    GOAL_NAMEPLATE_DELAY_SECONDS,
+    AVATAR_INSET_PX,
+    window_geometry_state,
+    get_scoreboard_slots,
+    get_goal_nameplate_slot,
+    BridgeState,
+    FocusState,
+    poll_bridge_loop,
+    UI_SCALE,
+)
+
+DEBUG_MODE = False  # set by --debug CLI flag in main(), before mainloop()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+log = logging.getLogger("win-overlay")
+
+# A color vanishingly unlikely to appear in a real avatar photo (pure,
+# fully-saturated magenta) — every pixel this exact color becomes
+# invisible AND click-through. Avatar images are composited onto a
+# background of this color (see _load_avatar) so their transparent/
+# rounded-corner regions vanish the same way GTK's alpha compositing did
+# on Linux, just via a color-key instead of true per-pixel alpha.
+TRANSPARENT_KEY = "#ff00fe"
+
+bridge_state = BridgeState()
+focus_state = FocusState()
+
+# Substrings to match against the foreground window's title (case-
+# insensitive). Rocket League's window title varies slightly by how
+# it's launched (Steam/Epic) — if focus detection isn't working, check
+# what win32gui.GetWindowText(win32gui.GetForegroundWindow()) reports
+# while RL is focused and add that string here.
+RL_WINDOW_MATCH_CANDIDATES = ["rocket league"]
+
+
+def poll_focus_loop() -> None:
+    """Runs in a background thread; polls the Win32 foreground window
+    and updates focus_state + window_geometry_state. Never touches
+    Tkinter directly (Tk isn't thread-safe — the main thread's
+    after()-driven tick reads these instead)."""
+    logged_unmatched = set()
+    while True:
+        try:
+            hwnd = win32gui.GetForegroundWindow()
+            title = (win32gui.GetWindowText(hwnd) or "").lower() if hwnd else ""
+            is_rl = any(candidate in title for candidate in RL_WINDOW_MATCH_CANDIDATES)
+            focus_state.set(is_rl)
+
+            if is_rl:
+                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+                w, h = right - left, bottom - top
+                if w > 0 and h > 0:
+                    geometry = (left, top, w, h)
+                    if window_geometry_state.get() != geometry:
+                        log.info("RL window geometry: %s", geometry)
+                        window_geometry_state.set(geometry)
+
+            if not is_rl and title not in logged_unmatched:
+                log.info("Foreground window (not matched as RL): title=%r", title)
+                logged_unmatched.add(title)
+        except Exception:
+            log.exception("Error polling foreground window")
+        time.sleep(1.0)
+
+
+def _make_click_through(hwnd: int) -> None:
+    """Add WS_EX_LAYERED | WS_EX_TRANSPARENT so the whole window ignores
+    mouse input — clicks always fall through to Rocket League or
+    whatever's underneath, regardless of focus state. Equivalent to the
+    empty cairo.Region() trick on the GTK/Wayland side."""
+    ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+    win32gui.SetWindowLong(
+        hwnd, win32con.GWL_EXSTYLE,
+        ex_style | win32con.WS_EX_LAYERED | win32con.WS_EX_TRANSPARENT,
+    )
+    log.info("Click-through enabled (WS_EX_LAYERED | WS_EX_TRANSPARENT).")
+
+
+def _virtual_screen_rect() -> tuple[int, int, int, int]:
+    """(x, y, w, h) of the full virtual screen, spanning all monitors —
+    matches gtk4_overlay's full-anchor layer-shell surface, so slots
+    computed from RL's window geometry (which may not be at (0,0) on a
+    multi-monitor setup) land in the right place."""
+    x = win32api.GetSystemMetrics(win32con.SM_XVIRTUALSCREEN)
+    y = win32api.GetSystemMetrics(win32con.SM_YVIRTUALSCREEN)
+    w = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
+    h = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
+    return x, y, w, h
+
+
+class Overlay:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self._texture_cache: dict[str, ImageTk.PhotoImage] = {}
+        self._avatar_labels: dict[str, tk.Label] = {}
+        self._last_logged_positions: dict[str, tuple] = {}
+        self._last_logged_team_size = None
+
+        screen_x, screen_y, screen_w, screen_h = _virtual_screen_rect()
+        self._origin = (screen_x, screen_y)
+
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        root.configure(bg=TRANSPARENT_KEY)
+        root.attributes("-transparentcolor", TRANSPARENT_KEY)
+        root.geometry(f"{screen_w}x{screen_h}+{screen_x}+{screen_y}")
+
+        self.debug_label = None
+        if DEBUG_MODE:
+            self.debug_label = tk.Label(
+                root, text="waiting for bridge...", justify="left",
+                anchor="nw", bg="black", fg="#00ff00",
+                font=("Consolas", 10), padx=8, pady=8,
+            )
+            self.debug_label.place(x=10, y=10)
+
+        # Click-through must be applied after the window actually
+        # exists (needs a real HWND) — do it once the window is mapped.
+        root.after(0, self._enable_click_through)
+        root.after(50, self._tick)
+
+    def _enable_click_through(self) -> None:
+        self.root.update_idletasks()
+        hwnd = self.root.winfo_id()
+        # winfo_id() on a Tk toplevel returns the window's own HWND on
+        # Windows (unlike X11, no separate "frame" reparenting to chase).
+        try:
+            _make_click_through(hwnd)
+        except Exception:
+            log.exception("Could not enable click-through")
+
+    def _load_avatar(self, path: str, w: int, h: int) -> ImageTk.PhotoImage | None:
+        """Load + cache an avatar image, composited onto a TRANSPARENT_KEY
+        background so any alpha/rounded-corner regions in the source PNG
+        vanish through the color-key instead of showing a black/white
+        box. Re-composited per requested size, cached by (path, w, h)."""
+        cache_key = f"{path}|{w}x{h}"
+        if cache_key in self._texture_cache:
+            return self._texture_cache[cache_key]
+        try:
+            src = Image.open(path).convert("RGBA")
+            inset = AVATAR_INSET_PX
+            inner_w, inner_h = max(1, w - 2 * inset), max(1, h - 2 * inset)
+            # COVER fit: scale to fill, center-crop the overflow — matches
+            # Gtk.ContentFit.COVER used on the Linux side.
+            src_ratio = src.width / src.height
+            dst_ratio = inner_w / inner_h
+            if src_ratio > dst_ratio:
+                scale_h = inner_h
+                scale_w = round(inner_h * src_ratio)
+            else:
+                scale_w = inner_w
+                scale_h = round(inner_w / src_ratio)
+            resized = src.resize((max(1, scale_w), max(1, scale_h)), Image.LANCZOS)
+            left = (resized.width - inner_w) // 2
+            top = (resized.height - inner_h) // 2
+            cropped = resized.crop((left, top, left + inner_w, top + inner_h))
+
+            bg = Image.new("RGBA", (inner_w, inner_h), TRANSPARENT_KEY)
+            bg.alpha_composite(cropped)
+            photo = ImageTk.PhotoImage(bg.convert("RGB"))
+            self._texture_cache[cache_key] = photo
+            return photo
+        except Exception as e:
+            log.warning("Failed to load avatar image %s: %s", path, e)
+            return None
+
+    def _place_avatar(self, widget_id: str, avatar_path: str, x: int, y: int, w: int, h: int) -> None:
+        photo = self._load_avatar(avatar_path, w, h)
+        if photo is None:
+            self._hide_avatar(widget_id)
+            return
+
+        inset = AVATAR_INSET_PX
+        rel_x = x - self._origin[0] + inset
+        rel_y = y - self._origin[1] + inset
+
+        label = self._avatar_labels.get(widget_id)
+        if label is None:
+            label = tk.Label(self.root, bd=0, highlightthickness=0, bg=TRANSPARENT_KEY)
+            self._avatar_labels[widget_id] = label
+        label.configure(image=photo)
+        label.image = photo  # keep a reference; Tk drops GC'd PhotoImages
+        label.place(x=rel_x, y=rel_y, width=w - 2 * inset, height=h - 2 * inset)
+
+    def _hide_avatar(self, widget_id: str) -> None:
+        label = self._avatar_labels.get(widget_id)
+        if label is not None:
+            label.place_forget()
+
+    def _tick(self) -> None:
+        state = bridge_state.get()
+        players = state.get("players", [])
+        scoreboard_visible = state.get("scoreboard_visible", False)
+        last_goal = state.get("last_goal")
+        is_replay = state.get("is_replay", False)
+
+        if self.debug_label is not None:
+            avatar_summary = ", ".join(
+                f"{p.get('name')}={'PFP' if p.get('avatar_path') else 'none'}"
+                for p in players
+            ) or "(no players)"
+            goal_age = f"{time.time() - last_goal['timestamp']:.1f}s ago" if last_goal else "none"
+            geometry = window_geometry_state.get()
+            self.debug_label.configure(text=(
+                f"players: {len(players)} | scoreboard_visible: {scoreboard_visible}\n"
+                f"last_goal: {goal_age}\n"
+                f"{avatar_summary}\n"
+                f"RL focused: {focus_state.get()}\n"
+                f"RL window: {geometry or '(not detected — using reference res, no scaling)'} | "
+                f"ui_scale: {UI_SCALE}"
+            ))
+
+        if not focus_state.get():
+            for team_name in ("blue", "orange"):
+                for row_idx in range(4):
+                    self._hide_avatar(f"scoreboard_{team_name}_{row_idx}")
+            self._hide_avatar("goal_nameplate")
+            self.root.after(50, self._tick)
+            return
+
+        if scoreboard_visible:
+            for team_name in ("blue", "orange"):
+                for row_idx in range(4):
+                    self._hide_avatar(f"scoreboard_{team_name}_{row_idx}")
+
+            blue = sorted(
+                [p for p in players if p.get("team_num") == 0],
+                key=lambda p: p.get("score", 0), reverse=True,
+            )
+            orange = sorted(
+                [p for p in players if p.get("team_num") == 1],
+                key=lambda p: p.get("score", 0), reverse=True,
+            )
+
+            team_size = max(len(blue), len(orange), 1)
+            slots = get_scoreboard_slots(team_size)
+
+            if self._last_logged_team_size != team_size:
+                log.info(
+                    "team_size=%d (blue=%d, orange=%d) -> slots=%s",
+                    team_size, len(blue), len(orange), slots,
+                )
+                self._last_logged_team_size = team_size
+
+            for team_name, team_players in (("blue", blue), ("orange", orange)):
+                for slot in slots:
+                    slot_team, row_idx, x, y, w, h = slot
+                    if slot_team != team_name:
+                        continue
+                    widget_id = f"scoreboard_{team_name}_{row_idx}"
+                    if row_idx < len(team_players):
+                        p = team_players[row_idx]
+                        avatar_path = p.get("avatar_path")
+                        if avatar_path:
+                            prev = self._last_logged_positions.get(widget_id)
+                            if prev != (p.get("name"), x, y):
+                                log.info(
+                                    "PLACE %s: %s -> x=%d y=%d w=%d h=%d",
+                                    widget_id, p.get("name"), x, y, w, h,
+                                )
+                                self._last_logged_positions[widget_id] = (p.get("name"), x, y)
+                            self._place_avatar(widget_id, avatar_path, x, y, w, h)
+        else:
+            for team_name in ("blue", "orange"):
+                for row_idx in range(4):
+                    self._hide_avatar(f"scoreboard_{team_name}_{row_idx}")
+
+        if last_goal:
+            elapsed = time.time() - last_goal.get("timestamp", 0)
+        else:
+            elapsed = None
+        in_delay_window = (
+            elapsed is not None
+            and GOAL_NAMEPLATE_DELAY_SECONDS <= elapsed < (GOAL_NAMEPLATE_DELAY_SECONDS + GOAL_NAMEPLATE_DURATION_SECONDS)
+        )
+        if in_delay_window and is_replay:
+            scorer_key = last_goal.get("scorer_key")
+            scorer = next(
+                (p for p in players
+                 if p.get("platform") + "|" + p.get("uid") + "|" + str(p.get("splitscreen")) == scorer_key),
+                None,
+            )
+            avatar_path = scorer.get("avatar_path") if scorer else None
+            x, y, w, h = get_goal_nameplate_slot()
+            if avatar_path:
+                self._place_avatar("goal_nameplate", avatar_path, x, y, w, h)
+            else:
+                self._hide_avatar("goal_nameplate")
+        else:
+            self._hide_avatar("goal_nameplate")
+
+        self.root.after(50, self._tick)
+
+
+def main():
+    global DEBUG_MODE
+    parser = argparse.ArgumentParser(description="RL PFP overlay (Windows)")
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Show the debug HUD (player list, last goal, focus state) in the top-left corner",
+    )
+    args = parser.parse_args()
+    DEBUG_MODE = args.debug
+
+    # DPI awareness so win32 coordinates/geometry match real pixels, not
+    # a Windows-scaled logical size (avoids double-scaling on top of our
+    # own rl_ui_scale correction on a >100% Windows display scale).
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_AWARE_V2
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            log.warning("Could not set DPI awareness — positions may be off on a scaled display.")
+
+    poll_thread = threading.Thread(target=poll_bridge_loop, args=(bridge_state,), daemon=True)
+    poll_thread.start()
+
+    focus_thread = threading.Thread(target=poll_focus_loop, daemon=True)
+    focus_thread.start()
+
+    root = tk.Tk()
+    Overlay(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
