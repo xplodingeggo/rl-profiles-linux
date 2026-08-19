@@ -122,6 +122,25 @@ class ProbeApp:
             text=f"x={s.x:g} y={s.y:g} w={s.w:g} h={s.h:g}",
             fill="#ffff00", font=("Consolas", 10, "bold"), anchor="w",
         )
+        self._force_recomposite()
+
+    def _force_recomposite(self):
+        """canvas.delete("all") + recreate updates Tk's own internal
+        state fine, but a WS_EX_LAYERED|WS_EX_TRANSPARENT window (see
+        _make_click_through) doesn't reliably recomposite the actual
+        on-screen surface on its own afterward — the old box's pixels
+        stay visually "burned in" until forced, the same underlying
+        quirk win_overlay.py's black-screen fix worked around at
+        startup. Here it has to run on every redraw, not just once."""
+        self.overlay.update_idletasks()
+        try:
+            hwnd = self.overlay.winfo_id()
+            win32gui.RedrawWindow(
+                hwnd, None, None,
+                win32con.RDW_INVALIDATE | win32con.RDW_UPDATENOW | win32con.RDW_ALLCHILDREN,
+            )
+        except Exception:
+            log.exception("Could not force recomposite")
 
     def _build_control_window(self):
         window = tk.Toplevel()
