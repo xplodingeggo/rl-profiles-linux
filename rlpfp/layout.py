@@ -91,14 +91,12 @@ SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
 ROW_HEIGHT_QUAD = (88.0, -86.0, 72.0)  # c0 +1: uniform +1px row spacing, all scales
 NAMEPLATE_UI_QUAD = {
     # x/y refit on Windows: box_probe-measured target at s=1.0 is
-    # x=970, y=1150 (a +1/+1 nudge on top of the prior 969/1149 pass).
-    # Refit through the SAME trusted s=0.5/s=0.75 points from the
-    # original Linux calibration, only replacing the s=1.0 target each
-    # time. Original (pre-Windows) curves: x=(8.0,-322.0,237.0),
-    # y=(-16.0,-271.0,1396.0) — note the x curve landed back on its
-    # original value here, since the net nameplate x adjustment across
-    # all passes summed to zero.
-    "x": (8.0, -322.0, 237.0),
+    # x=969, y=1150 (final -1px x nudge on top of the prior 970/1150
+    # pass — dead on target now). Refit through the SAME trusted
+    # s=0.5/s=0.75 points from the original Linux calibration, only
+    # replacing the s=1.0 target each time. Original (pre-Windows)
+    # curves: x=(8.0,-322.0,237.0), y=(-16.0,-271.0,1396.0).
+    "x": (0.0, -312.0, 234.0),
     "y": (304.0, -671.0, 1516.0),
     "size": (0.0, 100.0, 0.0),
 }
