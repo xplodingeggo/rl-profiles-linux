@@ -2,7 +2,13 @@
 rl-pfp — unified CLI entrypoint.
 
     rl-pfp                    same as `rl-pfp start`
-    rl-pfp start [--debug]     run rl_stats_bridge + gtk4_overlay + controller_listener (foreground)
+    rl-pfp start [--debug] [--verbose]
+                                    run rl_stats_bridge + gtk4_overlay + controller_listener
+                                    (foreground). --debug: overlay HUD only. --verbose:
+                                    bridge per-request access logs (noisy, off by default —
+                                    was previously (and confusingly) tied to --debug, which
+                                    buried real status lines like the controller's "no
+                                    controller connected, retrying" under a wall of HTTP logs)
     rl-pfp status                query a running bridge, print state, exit
     rl-pfp config                  interactively view/edit config.json (steam/psn/xbox keys,
                                      bridge_venv_python — pfp_resolver.py bootstraps the actual
@@ -54,7 +60,7 @@ def _cmd_start(args: argparse.Namespace) -> int:
         ui_scale = ui_scale / 100  # "--ui-scale 75" -> 0.75
 
     return supervisor.run(
-        debug=args.debug, verbose=args.debug,
+        debug=args.debug, verbose=args.verbose,
         bridge_python=bridge_python, ui_scale=ui_scale,
     )
 
@@ -128,7 +134,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_start = sub.add_parser("start", help="run bridge + overlay + controller (foreground)")
     p_start.add_argument(
         "--debug", action="store_true",
-        help="overlay debug HUD + bridge verbose access logs",
+        help="overlay debug HUD (does NOT enable bridge access logs — see --verbose)",
+    )
+    p_start.add_argument(
+        "--verbose", action="store_true",
+        help="bridge verbose access logs (one line per HTTP request the overlay makes — "
+             "very noisy, ~20/sec; separate from --debug so it doesn't drown out "
+             "controller/bridge status messages in the terminal)",
     )
     p_start.add_argument(
         "--no-prompt", action="store_true",
