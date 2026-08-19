@@ -1,16 +1,11 @@
 # Autostart via systemd (--user service)
 
 Starts/stops the overlay automatically whenever Rocket League's actual
-game process (`RocketLeague.exe`) appears/disappears — works no matter
-how RL gets launched (Heroic, Steam, direct exe) or which compositor
-you're on, since it watches the process itself instead of hooking into
-a specific launcher or window manager.
+game process, RocketLeague.exe is detected
 
-Requires: `rl-pfp` already installed and on PATH (`pip install -e .`
-from repo root, or however you normally run it). No Hyprland
-dependency in the watcher itself — `gtk4_overlay.py` still uses
-`hyprctl` on its own for window geometry, that's unrelated.
-
+* Requires: `rl-pfp` already installed and on PATH (`pip install -e .`
+from repo root, or however you normally run it). 
+* A system which supports systemd services like arch
 ## Install
 
 ```bash
@@ -30,10 +25,7 @@ already running.
 
 ## What it does
 
-`rl-pfp-watcher.sh` polls `pgrep -f RocketLeague.exe` every 5 seconds —
-that's the real Proton process, not the launcher/wrapper processes
-around it (Launcher.exe, steam.exe, python's waitforexitandrun, etc):
-
+`rl-pfp-watcher.sh` checks for process using `pgrep -f RocketLeague.exe` every 5 seconds 
 - Process appears, no overlay running yet -> starts `rl-pfp start
   --no-prompt` in the background.
 - Process disappears, overlay still running -> kills it cleanly
