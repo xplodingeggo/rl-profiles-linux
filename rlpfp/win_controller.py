@@ -166,21 +166,43 @@ def detect_button() -> None:
     """`--detect` mode: waits for the next button press on the first
     connected controller and prints its XInput name, so you can copy
     the right value into config.json's scoreboard_button_windows
-    without guessing."""
-    index = find_connected_controller()
-    if index is None:
-        log.error("No XInput controller connected — can't detect a button press.")
-        return
+    without guessing.
 
-    print(f"Listening on XInput slot {index} — press the button you want to use "
-          f"for the scoreboard toggle (Ctrl+C to cancel)...")
-    prev_buttons = 0
+    A DirectInput-only pad (e.g. most non-Xbox controllers) only shows
+    up here once Steam Input has bound it to a virtual XInput device —
+    that binding can take a few seconds after Steam/the game starts, or
+    after you enable Steam Input for it, so this retries every
+    RECONNECT_DELAY_SECONDS instead of giving up on the first check
+    (same patience listen_loop() already has for the main run loop)."""
     try:
+        index = find_connected_controller()
+        waited = False
+        while index is None:
+            if not waited:
+                print(
+                    "No XInput controller detected yet — if you're using "
+                    "Steam Input to remap a non-Xbox pad, this can take a "
+                    "few seconds to bind after Steam/the game starts. "
+                    f"Retrying every {RECONNECT_DELAY_SECONDS}s (Ctrl+C to cancel)..."
+                )
+                waited = True
+            time.sleep(RECONNECT_DELAY_SECONDS)
+            index = find_connected_controller()
+
+        print(f"Listening on XInput slot {index} — press the button you want to use "
+              f"for the scoreboard toggle (Ctrl+C to cancel)...")
+        prev_buttons = 0
         while True:
             state = get_state(index)
             if state is None:
-                log.warning("Controller disconnected.")
-                return
+                log.warning("Controller disconnected — waiting for it to reconnect...")
+                index = None
+                while index is None:
+                    time.sleep(RECONNECT_DELAY_SECONDS)
+                    index = find_connected_controller()
+                print(f"Reconnected on XInput slot {index}.")
+                prev_buttons = 0
+                continue
             buttons = state.Gamepad.wButtons
             newly_pressed = buttons & ~prev_buttons
             if newly_pressed:
