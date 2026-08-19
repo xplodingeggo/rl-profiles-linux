@@ -27,21 +27,29 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".config" / "rl-pfp-overlay"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
-# (config key, env var, human label, one-line help)
+# (config key, env var, human label, one-line help, prompt on first run?)
+# The last flag distinguishes fields worth interrupting a first `rl-pfp
+# start` for (API keys — the whole point of running this) from ones
+# that already have a sane default and just add a wall of prompts
+# every fresh install — those are still fully editable, just via
+# `rl-pfp config` instead of nagging on first run.
 _FIELDS = [
     (
         "steam_api_key", "STEAM_API_KEY", "Steam Web API key",
         "free at https://steamcommunity.com/dev — leave blank to skip Steam avatars",
+        True,
     ),
     (
         "psn_npsso", "PSN_NPSSO", "PSN NPSSO",
         "one-time only; leave blank to skip PSN avatars. resolver.py "
         "auto-bootstraps the actual OAuth tokens from this the first time "
         "it needs a PSN avatar, so nothing further to run here",
+        True,
     ),
     (
         "xbox_api_key", "XBOX_API_KEY", "Xbox (OpenXBL / xbl.io) API key",
         "free at https://xbl.io — leave blank to skip Xbox avatars",
+        True,
     ),
     (
         "bridge_venv_python", None, "Path to bridge/controller's venv Python",
@@ -50,18 +58,21 @@ _FIELDS = [
         "environments). The overlay always uses that same interpreter "
         "rl-pfp runs under too, since PyGObject/gtk4-layer-shell usually "
         "needs system Python, not a venv",
+        False,
     ),
     (
         "scoreboard_button", None, "Controller button for scoreboard toggle",
         "e.g. BTN_SELECT (Share/Select) — defaults to BTN_THUMBL (L3) if "
         "left blank. Run `python3 -m rlpfp.controller_listener --detect` "
         "and press the button you want to find its exact name first",
+        False,
     ),
     (
         "rl_ui_scale", "RL_UI_SCALE", "Rocket League 'Interface Scale' video setting",
         "e.g. 0.75 for 75% — must match RL's own setting exactly (Options > "
         "Video), used to scale overlay positions to your resolution. "
         "Leave blank to assume 0.75 (the calibrated default)",
+        False,
     ),
 ]
 
@@ -96,8 +107,8 @@ def ensure_config(*, interactive: bool = True) -> dict:
     config = load_config()
     missing = [
         (key, env, label, help_text)
-        for key, env, label, help_text in _FIELDS
-        if not _getenv(env) and not config.get(key)
+        for key, env, label, help_text, first_run_prompt in _FIELDS
+        if first_run_prompt and not _getenv(env) and not config.get(key)
     ]
 
     if not missing:
@@ -135,7 +146,7 @@ def edit_interactive() -> None:
     print("(press Enter to keep the current value, or type a new one)\n")
 
     changed = False
-    for key, env, label, help_text in _FIELDS:
+    for key, env, label, help_text, _first_run_prompt in _FIELDS:
         current = config.get(key)
         env_override = _getenv(env)
         if env_override:
