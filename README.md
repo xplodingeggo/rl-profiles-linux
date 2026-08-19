@@ -52,6 +52,10 @@ Add whatever that prints to your shell's `$PATH`.
 
 `PyGObject` (used by the overlay) usually needs to be system Python, since venvs dont let you install it. If you'd rather keep `aiohttp`/`evdev` isolated in their own venv instead of installing them system-wide, u can do it but u weird asl — see **Configuration** below (`bridge_venv_python`). Install `rl-pfp-overlay` itself under system Python either way.
 
+#### Optional: run it as a systemd service
+
+Don't want to run `rl-pfp` by hand every time? [Click here](systemd/README.md) to set it up as a systemd service that starts/stops itself with Rocket League automatically.
+
 ### Configuration
 
 ```bash
@@ -67,6 +71,8 @@ Interactively sets `~/.config/rl-pfp-overlay/config.json`:
 | `xbox_api_key`       | Xbox avatars                   | free at [xbl.io](https://xbl.io)                                                                                                                                  |
 | `bridge_venv_python` | only if splitting environments | path to a venv's `python`, used for the bridge + controller only (you should leave blank)                                                                         |
 | scoreboard_button    | controller button toggle       | evdev button name (e.g. `BTN_SELECT` for Share/Select); defaults to `BTN_THUMBL` (L3) if blank. Run `python3 -m rlpfp.controller_listener --detect` to find yours |
+| `rl_ui_scale`        | anyone not on 75% interface scale | same thing as `--ui-scale` above but saved so you don't have to type it every launch. Must match RL's Options > Video "Interface Scale" exactly, e.g. `0.75`      |
+| `epic_placeholder_disabled` | Epic players you'd rather show RL's default pic | Epic has no public avatar API so it shows a placeholder image by default — set this to skip it and let RL's built-in default show instead. Toggle it from `rl-pfp config` |
 | avatar_overrides     | custom pfps                    | set via `rl-pfp config` at the end — no code editing needed                                                                                                       |
 
 Blank/omitted fields just skip that platform's avatars. Env vars `STEAM_API_KEY` / `PSN_NPSSO` / `XBOX_API_KEY` still work and take priority over the config file.
