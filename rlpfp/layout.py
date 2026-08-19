@@ -82,8 +82,9 @@ SCOREBOARD_LAYOUTS = {
     # further +10/11px, same pattern as 3v3's orange fix — 823 (final
     # y=818). Blue: user confirmed it renders 38-40px too low (~39,
     # landed on the even-number candidate at their request) — moved to
-    # 389 (final y=384), then -1px more to 388 (final y=383).
-    4: {"blue": 388, "orange": 823},  # blue was 428, then 389; orange was 756, then 812
+    # 389 (final y=384), then -1px to 388 (final y=383), then -1px more
+    # to 387 (final y=382).
+    4: {"blue": 387, "orange": 823},  # blue was 428, then 389, 388; orange was 756, then 812
     # 3v3: the blind "+1 row spacing" guess (754->810) landed close but
     # not exact — box_probe measured the real target as y=817 at s=1.0,
     # which needs base=822 here (not 810), a further +12 on top of the
