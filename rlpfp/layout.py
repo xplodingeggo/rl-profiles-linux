@@ -71,9 +71,16 @@ SLOT_X = 714  # horizontal position — same for both teams, all sizes (probe-me
 AVATAR_INSET_PX = 0
 
 SCOREBOARD_LAYOUTS = {
-    4: {"blue": 428, "orange": 756},
-    3: {"blue": 490, "orange": 754},
-    2: {"blue": 553, "orange": 756},
+    # orange +ROW_HEIGHT (56) on Windows for 4/3/2: confirmed on real
+    # hardware that orange row0 was rendering exactly one row spacing
+    # too high in 2v2 and 3v3 (almost certainly 4v4 too) — same class
+    # of bug the original Linux calibration already hit once for blue's
+    # 3v3 value (see the historical "orange rendered a full row too
+    # low" note this project's Linux history carries for that case).
+    # 1v1 not reported broken, left untouched.
+    4: {"blue": 428, "orange": 812},  # was 756
+    3: {"blue": 490, "orange": 810},  # was 754
+    2: {"blue": 553, "orange": 812},  # was 756
     1: {"blue": 617, "orange": 761},
 }
 
