@@ -129,11 +129,30 @@ def _make_click_through(hwnd: int) -> None:
     """Add WS_EX_LAYERED | WS_EX_TRANSPARENT so the whole window ignores
     mouse input — clicks always fall through to Rocket League or
     whatever's underneath, regardless of focus state. Equivalent to the
-    empty cairo.Region() trick on the GTK/Wayland side."""
+    empty cairo.Region() trick on the GTK/Wayland side.
+
+    Tkinter's own `-transparentcolor` already sets WS_EX_LAYERED and a
+    colorkey via SetLayeredWindowAttributes. SetWindowLong touching
+    GWL_EXSTYLE resets that colorkey as a side effect (a Windows quirk,
+    not documented but reliably reproducible) — without re-applying it
+    below, the window silently reverts to fully opaque and paints solid
+    black over everything instead of being transparent."""
     ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
     win32gui.SetWindowLong(
         hwnd, win32con.GWL_EXSTYLE,
         ex_style | win32con.WS_EX_LAYERED | win32con.WS_EX_TRANSPARENT,
+    )
+    r = int(TRANSPARENT_KEY[1:3], 16)
+    g = int(TRANSPARENT_KEY[3:5], 16)
+    b = int(TRANSPARENT_KEY[5:7], 16)
+    win32gui.SetLayeredWindowAttributes(hwnd, win32api.RGB(r, g, b), 0, win32con.LWA_COLORKEY)
+    # Force DWM to recomposite with the colorkey immediately — without
+    # this, the window can render one (or more) fully opaque black
+    # frames before the compositor catches up, which is a race, not
+    # deterministic: it can appear to "stick" black depending on timing.
+    win32gui.RedrawWindow(
+        hwnd, None, None,
+        win32con.RDW_INVALIDATE | win32con.RDW_UPDATENOW | win32con.RDW_ALLCHILDREN,
     )
     log.info("Click-through enabled (WS_EX_LAYERED | WS_EX_TRANSPARENT).")
 
@@ -176,13 +195,17 @@ class Overlay:
             )
             self.debug_label.place(x=10, y=10)
 
-        # Click-through must be applied after the window actually
-        # exists (needs a real HWND) — do it once the window is mapped.
-        root.after(0, self._enable_click_through)
+        # Click-through must be applied after the window's first real
+        # paint, not just after it exists — a 0ms `after()` fires before
+        # Tk's own -transparentcolor setup and initial compositing have
+        # actually landed, which raced against our win32 calls and could
+        # leave the window stuck fully opaque black. 150ms is enough
+        # margin for that first paint to land before we touch styles.
+        root.after(150, self._enable_click_through)
         root.after(50, self._tick)
 
     def _enable_click_through(self) -> None:
-        self.root.update_idletasks()
+        self.root.update()  # full update, not just idletasks — flush the initial paint
         hwnd = self.root.winfo_id()
         # winfo_id() on a Tk toplevel returns the window's own HWND on
         # Windows (unlike X11, no separate "frame" reparenting to chase).
