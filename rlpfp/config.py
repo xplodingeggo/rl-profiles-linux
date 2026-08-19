@@ -100,6 +100,16 @@ _FIELDS = [
         False,
     ),
     (
+        "scoreboard_button_hid", None, "Controller button spec (Windows, raw HID fallback)",
+        "'vid:pid:byte_offset:bitmask', e.g. 0x2dc8:0x6012:14:0x10 — only "
+        "used when your controller is found by NEITHER XInput nor the "
+        "DirectInput fallback (some wireless pads never register with "
+        "either). Requires `pip install hidapi`. Not set by default. Run "
+        "`python -m rlpfp.win_controller --detect-hid` (interactive — "
+        "press+hold the button when prompted) to generate this value",
+        False,
+    ),
+    (
         "rl_ui_scale", "RL_UI_SCALE", "Rocket League 'Interface Scale' video setting",
         "e.g. 0.75 for 75% — must match RL's own setting exactly (Options > "
         "Video), used to scale overlay positions to your resolution. "

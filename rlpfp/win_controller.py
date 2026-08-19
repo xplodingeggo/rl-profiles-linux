@@ -3,30 +3,37 @@
 Layer 6 (Windows): Controller input listener (button -> scoreboard visibility)
 
 Windows equivalent of controller_listener.py. evdev/`/dev/input` don't
-exist on Windows, so this reads controller state via two ctypes-only
-backends — no extra package needed for either, just system DLLs:
+exist on Windows, so this reads controller state via three backends,
+tried in order until one finds a device:
 
-  1. XInput (xinput1_4/1_3/9_1_0.dll) — real Xbox controllers, and
-     Steam Input when its output is set to Xbox 360 Controller
-     emulation. Buttons have real names (A/B/X/Y/BACK/START/...).
+  1. XInput (xinput1_4/1_3/9_1_0.dll, ctypes, no package needed) — real
+     Xbox controllers, and Steam Input when its output is set to Xbox
+     360 Controller emulation. Buttons have real names (A/B/X/Y/...).
 
   2. Legacy Multimedia Joystick API (winmm.dll's joyGetPosEx/
-     joyGetNumDevs) — a fallback for DirectInput-only pads. On modern
-     Windows this API is implemented on top of DirectInput itself, so
-     it sees the RAW physical controller directly, without needing
-     Steam Input to remap/expose it as XInput at all. This matters
-     because Steam Input on Windows only remaps input for the specific
-     game process it's actively hooking — unlike Linux, where Steam's
-     uinput-based remap exposes a virtual Xbox pad system-wide, so any
-     evdev reader picks it up regardless of what's running. Buttons
-     here are just numbered (no semantic names) — see
-     scoreboard_button_dinput_index below.
+     joyGetNumDevs, ctypes, no package needed) — a fallback for
+     DirectInput-only pads. On modern Windows this API is implemented
+     on top of DirectInput itself, so it sees the raw physical
+     controller directly without Steam Input remapping anything. Not
+     every controller gets registered here though (see #3).
 
-find_any_controller() tries XInput first (semantic names, so prefer it
-when available), then falls back to the legacy joystick API if nothing
-showed up there — covering both "Steam Input set to Xbox emulation" and
-"raw DirectInput pad, Steam Input not remapping it at all" setups
-without the user needing to pick a mode.
+  3. Raw HID reports (`pip install hidapi`) — the lowest-level fallback,
+     for controllers neither of the above ever sees at all (confirmed
+     with a real 8BitDo Ultimate 2 Wireless connected via its 2.4GHz
+     dongle: empty `--list` for both #1 and #2, but it enumerates fine
+     as a standard HID Gamepad). This is the same level Linux's evdev
+     operates at. HID reports have no standard button layout though —
+     unlike XInput, there's no "byte N bit M is always A" — so finding
+     your button requires an interactive baseline-diff: see
+     hid_detect_button() / `--detect-hid`.
+
+Across all three, Steam Input on Windows only remaps input for the
+specific game process it's actively hooking — unlike Linux, where
+Steam's uinput-based remap exposes a virtual Xbox pad system-wide that
+any evdev reader picks up regardless of what's running. That's why a
+controller working "in XInput mode" (native hardware switch, or Steam
+Input actively hooking THIS process) doesn't mean it'll be visible here
+via #1 when Steam Input isn't hooking rl-pfp itself — hence #2 and #3.
 
 Listens for a configurable button and POSTs to the bridge's
 /scoreboard-visible endpoint in real time, same as the Linux listener:
@@ -43,11 +50,17 @@ Config (via `rl-pfp config`):
                                     XInput device is found but a raw
                                     DirectInput one is. Not set by
                                     default — run --detect to find it.
+  scoreboard_button_hid            "vid:pid:byte_offset:bitmask" (e.g.
+                                    "0x2dc8:0x6012:14:0x10"). Only used
+                                    when NEITHER of the above find a
+                                    device but a raw HID gamepad exists.
+                                    Not set by default — run
+                                    --detect-hid to generate this value.
 
-    python -m rlpfp.win_controller --detect
+    python -m rlpfp.win_controller --detect          # XInput / DirectInput
+    python -m rlpfp.win_controller --detect-hid       # raw HID fallback
 
-...press the button — it'll print whichever config key + value to set,
-depending on which backend actually found your controller.
+...press the button — it'll print whichever config key + value to set.
 
 Run (alongside rl_stats_bridge.py):
   python -m rlpfp.win_controller
@@ -55,6 +68,7 @@ Run (alongside rl_stats_bridge.py):
 
 import ctypes
 from ctypes import wintypes
+from collections import Counter
 import json
 import logging
 import time
@@ -295,21 +309,307 @@ def _dinput_find_connected() -> int | None:
     return None
 
 
-# --- Unified lookup (tries XInput, falls back to legacy DirectInput) -----
+# --- Raw HID backend (fallback for pads NEITHER of the above ever see) ---
+#
+# Some controllers never get registered into Windows' legacy joystick
+# list at all — confirmed with a real 8BitDo Ultimate 2 Wireless on its
+# 2.4GHz dongle: `--list` came back completely empty for both XInput
+# and the legacy DirectInput scan above, yet it enumerates perfectly
+# fine as a standard HID Gamepad (Usage Page 0x01, Usage 0x05). Reading
+# the raw HID input reports directly is the lowest level that still
+# works uniformly for any compliant device — the same level Linux's
+# evdev operates at — but HID reports have no standard button layout
+# (unlike XInput's named bits), so there's no way to know which byte/bit
+# is "your button" without an interactive baseline-diff: see
+# hid_detect_button() / `--detect-hid`.
+#
+# Requires: pip install hidapi (the "hidapi" PyPI package specifically —
+# it bundles a prebuilt native library. The similarly-named "hid"
+# package is a thin wrapper that needs hidapi.dll installed separately
+# and will ImportError without it). Entirely optional: everything above
+# (XInput, legacy DirectInput) works without it — this only matters if
+# both of those find nothing for your controller.
 
-def find_any_controller() -> tuple[str, int] | tuple[None, None]:
-    """Returns ("xinput", index), ("dinput", index), or (None, None).
-    XInput is checked first — it gives semantic button names, so it's
-    preferred whenever available (a real Xbox pad, or Steam Input set to
-    Xbox 360 emulation). Falls back to the legacy joystick/DirectInput
-    scan for pads Steam Input isn't remapping (or isn't running at all
-    for), which the XInput API simply can't see."""
+try:
+    import hid as _hid_module
+    HID_AVAILABLE = True
+except ImportError:
+    _hid_module = None
+    HID_AVAILABLE = False
+
+HID_USAGE_PAGE_GENERIC_DESKTOP = 0x01
+HID_USAGE_JOYSTICK = 0x04
+HID_USAGE_GAMEPAD = 0x05
+HID_REPORT_SIZE = 64  # generous upper bound — read() just returns whatever's there
+HID_BASELINE_SAMPLES = 40
+HID_BASELINE_POLL_SECONDS = 0.01
+HID_BASELINE_TIMEOUT_SECONDS = 2.0
+HID_DETECT_TIMEOUT_SECONDS = 20
+
+
+def _hid_find_gamepads() -> list[dict]:
+    """Enumerate connected HID devices that identify as a standard
+    Joystick or Gamepad top-level collection (Usage Page 0x01, Usage
+    0x04/0x05) — the same classification Windows' own HID class driver
+    uses, so it works for any compliant device regardless of connection
+    type (USB, Bluetooth, 2.4GHz dongle) or whether the legacy joystick
+    API above ever saw it."""
+    if not HID_AVAILABLE:
+        return []
+    return [
+        d for d in _hid_module.enumerate()
+        if d.get("usage_page") == HID_USAGE_PAGE_GENERIC_DESKTOP
+        and d.get("usage") in (HID_USAGE_JOYSTICK, HID_USAGE_GAMEPAD)
+    ]
+
+
+def _hid_open(info: dict):
+    dev = _hid_module.device()
+    dev.open_path(info["path"])
+    dev.set_nonblocking(True)
+    return dev
+
+
+def _resolve_hid_spec(raw) -> dict | None:
+    """Parses the "vid:pid:byte_offset:bitmask" config string (each
+    part accepts hex "0x.." or plain decimal) produced by --detect-hid.
+    Returns None (and logs why) for anything malformed, so a typo
+    degrades instead of crashing the listener."""
+    if not raw:
+        return None
+    try:
+        vid_s, pid_s, byte_s, mask_s = str(raw).split(":")
+        return {
+            "vid": int(vid_s, 0),
+            "pid": int(pid_s, 0),
+            "byte_offset": int(byte_s, 0),
+            "bitmask": int(mask_s, 0),
+        }
+    except (ValueError, AttributeError):
+        log.warning(
+            "scoreboard_button_hid %r in config.json isn't in the expected "
+            "'vid:pid:byte_offset:bitmask' format — ignoring it. Run "
+            "`python -m rlpfp.win_controller --detect-hid` to generate a "
+            "valid value.",
+            raw,
+        )
+        return None
+
+
+def hid_list_devices() -> None:
+    if not HID_AVAILABLE:
+        log.info("Raw HID fallback not installed — run: pip install hidapi")
+        return
+    matches = _hid_find_gamepads()
+    if not matches:
+        log.info("No HID joystick/gamepad devices found.")
+        return
+    for d in matches:
+        log.info(
+            "HID: vid=0x%04x pid=0x%04x product=%r path=%s",
+            d["vendor_id"], d["product_id"], d.get("product_string"), d["path"],
+        )
+
+
+def _hid_capture_baseline(dev) -> tuple[list[int], set[int]] | None:
+    """Reads a burst of idle reports and returns (baseline, stable_bytes):
+    baseline[i] is the per-byte MODE (most common value) — the "at
+    rest" fingerprint button presses get diffed against — and
+    stable_bytes is the set of byte indices that read the SAME value on
+    every single sample.
+
+    Sticks/triggers/gyro drift constantly even at rest (confirmed: one
+    axis byte wandered by ~8 across a couple seconds of doing nothing),
+    so only stable_bytes are trustworthy candidates for "this is a
+    digital button" during detection — a real button is either exactly
+    baseline or exactly baseline-with-bits-set, never a slow wobble.
+
+    Returns None if no reports arrived at all (device not actually
+    streaming, e.g. asleep)."""
+    samples = []
+    deadline = time.time() + HID_BASELINE_TIMEOUT_SECONDS
+    while len(samples) < HID_BASELINE_SAMPLES and time.time() < deadline:
+        report = dev.read(HID_REPORT_SIZE)
+        if report:
+            samples.append(report)
+        time.sleep(HID_BASELINE_POLL_SECONDS)
+    if not samples:
+        return None
+    length = min(len(s) for s in samples)
+    baseline = []
+    stable_bytes = set()
+    for i in range(length):
+        values = Counter(s[i] for s in samples)
+        baseline.append(values.most_common(1)[0][0])
+        if len(values) == 1:
+            stable_bytes.add(i)
+    return baseline, stable_bytes
+
+
+HID_RELEASE_TIMEOUT_SECONDS = 10
+HID_RELEASE_DEBOUNCE_SAMPLES = 5
+
+
+def _hid_confirm_release(dev, byte_index: int, baseline_value: int) -> bool:
+    """Waits for byte_index to return to baseline_value and STAY there
+    for HID_RELEASE_DEBOUNCE_SAMPLES straight reads. A real button
+    press+release always does this; a one-off status/battery flag flip
+    generally won't revert within the timeout — this is what actually
+    separates the two, since a bare "value changed and held for a bit"
+    check alone isn't enough (confirmed against a real 8BitDo pad: a
+    status byte held its changed value across 5+ consecutive samples
+    with nobody touching the controller)."""
+    matched = 0
+    deadline = time.time() + HID_RELEASE_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        report = dev.read(HID_REPORT_SIZE)
+        if not report:
+            time.sleep(POLL_INTERVAL_SECONDS)
+            continue
+        if byte_index < len(report) and report[byte_index] == baseline_value:
+            matched += 1
+            if matched >= HID_RELEASE_DEBOUNCE_SAMPLES:
+                return True
+        else:
+            matched = 0
+        time.sleep(POLL_INTERVAL_SECONDS)
+    return False
+
+
+def hid_detect_button() -> None:
+    """`--detect-hid` mode: opens the first HID joystick/gamepad found,
+    captures an idle baseline, then waits for you to press a button and
+    diffs incoming reports against that baseline. Prints a
+    scoreboard_button_hid value to paste into config.json.
+
+    Has to run interactively like this (unlike the XInput/DirectInput
+    --detect path, which just waits for *any* known-shape button state
+    to change) since HID reports have no standard layout to check
+    against ahead of time — the diff against a just-captured baseline
+    IS the detection."""
+    if not HID_AVAILABLE:
+        print("Raw HID fallback not installed — run: pip install hidapi")
+        return
+
+    matches = _hid_find_gamepads()
+    if not matches:
+        print("No HID joystick/gamepad devices found. Is the controller connected?")
+        return
+
+    info = matches[0]
+    print(f"Opening {info.get('product_string')!r} (vid=0x{info['vendor_id']:04x} "
+          f"pid=0x{info['product_id']:04x})...")
+    dev = _hid_open(info)
+
+    # Consecutive matching samples required before trusting a detected
+    # change — filters out one-off noise spikes (a single stray report)
+    # that a bare first-difference check would false-positive on.
+    DEBOUNCE_SAMPLES = 5
+
+    try:
+        print("Capturing idle baseline — don't touch the controller for a moment...")
+        result = _hid_capture_baseline(dev)
+        if result is None:
+            print(
+                "No reports received from the device — it may be asleep or "
+                "not actually streaming input. Move a stick or press "
+                "anything once to wake it, then try again."
+            )
+            return
+        baseline, stable_bytes = result
+        if not stable_bytes:
+            print(
+                "Every byte in this device's report drifted during the idle "
+                "baseline — couldn't find any stable candidate bytes. Try "
+                "again (make sure the controller is sitting still), or this "
+                "controller's digital buttons may not map cleanly this way."
+            )
+            return
+
+        print(
+            f"Baseline captured ({len(baseline)} bytes, {len(stable_bytes)} "
+            f"stable). Now press and HOLD the button you want for the "
+            f"scoreboard toggle — you have {HID_DETECT_TIMEOUT_SECONDS}s "
+            f"(Ctrl+C to cancel)..."
+        )
+
+        pending = None  # (byte_index, changed_bits) awaiting debounce confirmation
+        pending_count = 0
+        deadline = time.time() + HID_DETECT_TIMEOUT_SECONDS
+        while time.time() < deadline:
+            report = dev.read(HID_REPORT_SIZE)
+            if not report:
+                time.sleep(POLL_INTERVAL_SECONDS)
+                continue
+
+            changed = [
+                (i, report[i] ^ baseline[i])
+                for i in stable_bytes
+                if i < len(report) and report[i] != baseline[i]
+            ]
+            # Exactly one changed stable byte is the clean case a real
+            # button press produces. Multiple at once (e.g. Ctrl+C
+            # timing, or an unrelated stable byte glitching) — restart
+            # debounce rather than guessing which one is real.
+            candidate = changed[0] if len(changed) == 1 else None
+
+            if candidate is not None and candidate == pending:
+                pending_count += 1
+            else:
+                pending, pending_count = candidate, 1 if candidate else 0
+
+            if pending is not None and pending_count >= DEBOUNCE_SAMPLES:
+                byte_index, changed_bits = pending
+                print(f"\nHeld change detected at byte {byte_index}: "
+                      f"{baseline[byte_index]} -> "
+                      f"{baseline[byte_index] ^ changed_bits} "
+                      f"(bitmask 0x{changed_bits:02x}) — now RELEASE it "
+                      f"(confirming this is a real button, not e.g. a "
+                      f"battery/status flag that just happened to flip)...")
+                if _hid_confirm_release(dev, byte_index, baseline[byte_index]):
+                    print("Release confirmed.")
+                    print(
+                        'Set this in config.json (or via `rl-pfp config`): '
+                        f'"scoreboard_button_hid": "0x{info["vendor_id"]:04x}:'
+                        f'0x{info["product_id"]:04x}:{byte_index}:0x{changed_bits:02x}"'
+                    )
+                else:
+                    print(
+                        f"\nByte {byte_index} never returned to its baseline "
+                        f"value ({baseline[byte_index]}) — this probably "
+                        f"WASN'T your button (likely a status/battery flag "
+                        f"that changed on its own). Discarding this result — "
+                        f"run --detect-hid again and press+hold firmly."
+                    )
+                return
+
+            time.sleep(POLL_INTERVAL_SECONDS)
+        print("\nTimed out without detecting a held change — try again and "
+              "press+hold firmly right after the prompt.")
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+    finally:
+        dev.close()
+
+
+# --- Unified lookup (XInput -> legacy DirectInput -> raw HID) ------------
+
+def find_any_controller() -> tuple[str, object] | tuple[None, None]:
+    """Returns ("xinput", index), ("dinput", index), ("hid", device_info
+    dict), or (None, None). XInput is checked first — it gives semantic
+    button names, so it's preferred whenever available (a real Xbox pad,
+    or Steam Input set to Xbox 360 emulation). Falls back to the legacy
+    joystick/DirectInput scan next, then to raw HID enumeration last —
+    each level catches controllers the previous one simply cannot see."""
     index = find_connected_controller()
     if index is not None:
         return "xinput", index
     index = _dinput_find_connected()
     if index is not None:
         return "dinput", index
+    hid_matches = _hid_find_gamepads()
+    if hid_matches:
+        return "hid", hid_matches[0]
     return None, None
 
 
@@ -338,6 +638,7 @@ def list_all_devices() -> None:
             "DirectInput slot %d: connected, name=%r buttons=0x%08x numButtons=%d",
             i, name, info.dwButtons, info.dwButtonNumber,
         )
+    hid_list_devices()
 
 
 def detect_button() -> None:
@@ -355,7 +656,16 @@ def detect_button() -> None:
     try:
         backend, index = find_any_controller()
         waited = False
-        while backend is None:
+        while backend is None or backend == "hid":
+            if backend == "hid":
+                print(
+                    f"Found {index.get('product_string')!r} via raw HID only — "
+                    "neither XInput nor the legacy DirectInput API can see it, "
+                    "so this --detect flow (which watches a known button-state "
+                    "shape change) doesn't apply. Use the HID-specific detector "
+                    "instead:\n  python -m rlpfp.win_controller --detect-hid"
+                )
+                return
             if not waited:
                 print(
                     "No controller detected yet (checked XInput and legacy "
@@ -446,23 +756,83 @@ def _resolve_dinput_index(raw) -> int | None:
         return None
 
 
+def _run_hid_listen(info: dict, hid_spec: dict) -> None:
+    """Inner loop for the raw-HID backend — needs an open device handle
+    kept alive across polls (unlike XInput/DirectInput, which are
+    stateless index lookups each tick), so it's structured differently
+    from the xinput/dinput branch below."""
+    if (info["vendor_id"], info["product_id"]) != (hid_spec["vid"], hid_spec["pid"]):
+        log.warning(
+            "Found a different HID controller (vid=0x%04x pid=0x%04x) than "
+            "configured in scoreboard_button_hid (vid=0x%04x pid=0x%04x) — "
+            "skipping. Retrying in %ss...",
+            info["vendor_id"], info["product_id"],
+            hid_spec["vid"], hid_spec["pid"], RECONNECT_DELAY_SECONDS,
+        )
+        time.sleep(RECONNECT_DELAY_SECONDS)
+        return
+
+    try:
+        dev = _hid_open(info)
+    except Exception:
+        log.exception("Failed to open HID device %r", info.get("product_string"))
+        time.sleep(RECONNECT_DELAY_SECONDS)
+        return
+
+    log.info("Selected controller: backend=hid product=%r", info.get("product_string"))
+    was_pressed = False
+    last_report = None
+    byte_offset, bitmask = hid_spec["byte_offset"], hid_spec["bitmask"]
+    try:
+        while True:
+            report = dev.read(HID_REPORT_SIZE)
+            if report:
+                last_report = report
+            elif last_report is None:
+                # No report yet since opening — device may just be slow to
+                # start streaming; keep waiting rather than declaring it
+                # disconnected immediately.
+                time.sleep(POLL_INTERVAL_SECONDS)
+                continue
+
+            is_pressed = (
+                last_report is not None
+                and byte_offset < len(last_report)
+                and bool(last_report[byte_offset] & bitmask)
+            )
+            if is_pressed != was_pressed:
+                post_scoreboard_visible(is_pressed)
+                was_pressed = is_pressed
+
+            time.sleep(POLL_INTERVAL_SECONDS)
+    except Exception:
+        log.exception("Unexpected error in HID listen loop")
+    finally:
+        dev.close()
+    time.sleep(RECONNECT_DELAY_SECONDS)
+
+
 def listen_loop() -> None:
     config = load_config()
     xinput_mask, xinput_name = resolve_button_mask(
         config.get("scoreboard_button_windows") or DEFAULT_BUTTON_NAME
     )
     dinput_index = _resolve_dinput_index(config.get("scoreboard_button_dinput_index"))
+    hid_spec = _resolve_hid_spec(config.get("scoreboard_button_hid"))
     log.info(
-        "Scoreboard toggle button: XInput=%s, DirectInput index=%s",
-        xinput_name, dinput_index if dinput_index is not None else "(not set)",
+        "Scoreboard toggle button: XInput=%s, DirectInput index=%s, HID spec=%s",
+        xinput_name,
+        dinput_index if dinput_index is not None else "(not set)",
+        hid_spec if hid_spec is not None else "(not set)",
     )
 
     while True:
         backend, index = find_any_controller()
         if backend is None:
             log.info(
-                "No controller connected (checked XInput and legacy "
-                "DirectInput) — retrying in %ss...", RECONNECT_DELAY_SECONDS,
+                "No controller connected (checked XInput, legacy "
+                "DirectInput, and raw HID) — retrying in %ss...",
+                RECONNECT_DELAY_SECONDS,
             )
             time.sleep(RECONNECT_DELAY_SECONDS)
             continue
@@ -477,6 +847,22 @@ def listen_loop() -> None:
                 RECONNECT_DELAY_SECONDS,
             )
             time.sleep(RECONNECT_DELAY_SECONDS)
+            continue
+
+        if backend == "hid" and hid_spec is None:
+            log.warning(
+                "Found a raw HID controller (%r) — not visible via XInput or "
+                "legacy DirectInput — but scoreboard_button_hid isn't set in "
+                "config.json. Run `python -m rlpfp.win_controller "
+                "--detect-hid`, then set it via `rl-pfp config`. Retrying "
+                "in %ss...",
+                index.get("product_string"), RECONNECT_DELAY_SECONDS,
+            )
+            time.sleep(RECONNECT_DELAY_SECONDS)
+            continue
+
+        if backend == "hid":
+            _run_hid_listen(index, hid_spec)
             continue
 
         log.info("Selected controller: backend=%s slot=%d", backend, index)
@@ -512,6 +898,10 @@ if __name__ == "__main__":
 
     if "--list" in sys.argv:
         list_all_devices()
+        sys.exit(0)
+
+    if "--detect-hid" in sys.argv:
+        hid_detect_button()
         sys.exit(0)
 
     if "--detect" in sys.argv:

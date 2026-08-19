@@ -14,6 +14,7 @@ dependencies = [
     "PyGObject; sys_platform == 'linux'",
     "evdev; sys_platform == 'linux'",
     "pywin32; sys_platform == 'win32'",
+    "hidapi; sys_platform == 'win32'",
 ]
 
 [project.scripts]
