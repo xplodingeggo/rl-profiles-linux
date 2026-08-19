@@ -89,20 +89,15 @@ SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
 }
 ROW_HEIGHT_QUAD = (88.0, -86.0, 72.0)  # c0 +1: uniform +1px row spacing, all scales
 NAMEPLATE_UI_QUAD = {
-    # x refit on Windows: user's own box_probe measurement at s=1.0 gave
-    # x=968 (the original Linux formula computes 970 there) — refit
-    # through the SAME trusted s=0.5/s=0.75 points, only replacing the
-    # s=1.0 target. Old curve: (8.0, -322.0, 237.0).
-    "x": (-8.0, -302.0, 231.0),
-    # y refit on Windows: box_probe-measured target is y=1149 at s=1.0.
-    # An earlier pass here landed on 1150 (off by 1px — the "+40px"
-    # correction was applied to the quad's raw output value, not
-    # accounting for the curve's built-in 1px offset from the reference
-    # slot's base y — see _scale_slot's delta math). Refit again through
-    # the same trusted s=0.5 (1256.5) and s=0.75 (1183.75) points,
-    # solving directly for the exact measured final y this time. Old
-    # (pre-Windows) curve: (-16.0, -271.0, 1396.0).
-    "y": (296.0, -661.0, 1513.0),
+    # x/y refit on Windows: user's box_probe measurement at s=1.0 (the
+    # final, corrected pass — two earlier passes based on eyeballed
+    # screenshots landed close but not exact) gives x=967, y=1147.
+    # Both refit through the SAME trusted s=0.5/s=0.75 points from the
+    # original Linux calibration, only replacing the s=1.0 target.
+    # Original (pre-Windows) curves: x=(8.0,-322.0,237.0),
+    # y=(-16.0,-271.0,1396.0).
+    "x": (-16.0, -292.0, 228.0),
+    "y": (280.0, -641.0, 1507.0),
     "size": (0.0, 100.0, 0.0),
 }
 
