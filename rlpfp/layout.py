@@ -78,8 +78,14 @@ SCOREBOARD_LAYOUTS = {
     # 3v3 value (see the historical "orange rendered a full row too
     # low" note this project's Linux history carries for that case).
     # 1v1 not reported broken, left untouched.
-    4: {"blue": 428, "orange": 812},  # was 756
-    3: {"blue": 490, "orange": 810},  # was 754
+    4: {"blue": 428, "orange": 812},  # was 756 — 4v4 not box_probe-verified yet, check this one
+    # 3v3: the blind "+1 row spacing" guess (754->810) landed close but
+    # not exact — box_probe measured the real target as y=817 at s=1.0,
+    # which needs base=822 here (not 810), a further +12 on top of the
+    # row-spacing guess. Since 4v4 got the same kind of blind guess and
+    # was never independently measured, treat its value as unconfirmed
+    # too until checked the same way.
+    3: {"blue": 490, "orange": 822},  # was 754, then 810, box_probe-confirmed
     2: {"blue": 553, "orange": 812},  # was 756
     1: {"blue": 617, "orange": 761},
 }
