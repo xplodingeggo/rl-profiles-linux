@@ -78,7 +78,10 @@ SCOREBOARD_LAYOUTS = {
     # 3v3 value (see the historical "orange rendered a full row too
     # low" note this project's Linux history carries for that case).
     # 1v1 not reported broken, left untouched.
-    4: {"blue": 428, "orange": 812},  # was 756 — 4v4 not box_probe-verified yet, check this one
+    # 4v4 orange: blind "+1 row spacing" guess (756->812) needed a
+    # further +10/11px, same pattern as 3v3's orange fix — 823 (final
+    # y=818). Blue not yet confirmed for 4v4.
+    4: {"blue": 428, "orange": 823},  # was 756, then 812
     # 3v3: the blind "+1 row spacing" guess (754->810) landed close but
     # not exact — box_probe measured the real target as y=817 at s=1.0,
     # which needs base=822 here (not 810), a further +12 on top of the
