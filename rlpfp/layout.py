@@ -79,13 +79,13 @@ SCOREBOARD_LAYOUTS = {
 
 SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
     # x/y refit on Windows: team_size=2 blue row0 target at s=1.0 is
-    # x=526, y=547 (a +1/+1 nudge on top of the earlier y-only 36px
-    # correction — x had never been touched before this). Refit through
-    # the SAME trusted s=0.5/s=0.75 points from the original Linux
-    # calibration, only replacing the s=1.0 target each time. Original
-    # (pre-Windows) curves: x=(0.0,-756.0,1281.0), y=(4.0,-179.0,685.0).
+    # x=526, y=548 (final +1px y nudge on top of the prior 526/547
+    # pass). Refit through the SAME trusted s=0.5/s=0.75 points from
+    # the original Linux calibration, only replacing the s=1.0 target
+    # each time. Original (pre-Windows) curves: x=(0.0,-756.0,1281.0),
+    # y=(4.0,-179.0,685.0).
     "x": (8.0, -766.0, 1284.0),
-    "y": (300.0, -549.0, 796.0),
+    "y": (308.0, -559.0, 799.0),
     "size": (0.0, 64.0, 0.0),
 }
 ROW_HEIGHT_QUAD = (88.0, -86.0, 72.0)  # c0 +1: uniform +1px row spacing, all scales
