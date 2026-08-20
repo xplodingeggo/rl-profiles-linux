@@ -193,7 +193,7 @@ _WINDOWS_SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s 
     "y": (308.0, -559.0, 799.0),
     "size": (0.0, 64.0, 0.0),
 }
-_WINDOWS_ROW_HEIGHT_QUAD = (88.0, -86.0, 74.0)  # c0 +3 total: +1 from original Linux calibration, +2 more on Windows — row1/row2/row3 have no calibration point of their own (pure ROW_HEIGHT_QUAD math), and were rendering too close together at every scale; same uniform-shift approach as the original +1
+_WINDOWS_ROW_HEIGHT_QUAD = (88.0, -86.0, 72.0)  # c0 net +1 vs. original Linux calibration: +1, then +2 more (74) which turned out 2px too generous once measured row-by-row past row0 at 75% (rows drift increasingly imprecise the further down the block) — backed off by 2 (74->72). Uniform shift (c0 only) — applies the same -2px at every scale, same as every previous row-height adjustment here. row1/row2/row3 have no calibration point of their own (pure ROW_HEIGHT_QUAD math), so this is the only lever for their spacing.
 
 # Neither team's row0 scales with UI scale exactly the way
 # SCOREBOARD_UI_QUAD's shared y-curve predicts — it was fit from a
