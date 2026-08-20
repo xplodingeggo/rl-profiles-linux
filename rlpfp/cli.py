@@ -15,6 +15,9 @@ rl-pfp — unified CLI entrypoint.
                                      PSN OAuth tokens automatically on first use)
     rl-pfp grid                    standalone pixel-grid calibration overlay — safe to run
                                      alongside `rl-pfp start`, doesn't touch avatar rendering
+    rl-pfp gui                     native control panel — install/configure/start, controller
+                                     button detect, Windows-startup toggle (or use rl-pfp-gui.exe,
+                                     which opens with no console window)
 
 Each component also still runs completely standalone, unchanged, for
 isolated debugging:
@@ -107,6 +110,14 @@ def _cmd_grid(_args: argparse.Namespace) -> int:
         return 0
 
 
+def _cmd_gui(_args: argparse.Namespace) -> int:
+    """Launch the native control panel (win_gui.py, Tkinter/ttk). Runs
+    in-process (not a subprocess) since it has no other work to do
+    first — unlike grid/probe, which run alongside `rl-pfp start`."""
+    from . import win_gui
+    return win_gui.main()
+
+
 def _cmd_probe(_args: argparse.Namespace) -> int:
     """Launch the standalone box-position probe overlay (win_box_probe.py,
     Tkinter/win32) as its own process. Runs independently, alongside or
@@ -159,6 +170,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="run the standalone pixel-grid calibration overlay (safe alongside `start`)",
     )
     p_grid.set_defaults(func=_cmd_grid)
+
+    p_gui = sub.add_parser("gui", help="launch the native control panel")
+    p_gui.set_defaults(func=_cmd_gui)
 
     p_probe = sub.add_parser(
         "probe",

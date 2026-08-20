@@ -103,6 +103,10 @@ _FIELDS = [
     ),
 ]
 
+# Public alias — external callers (e.g. win_gui.py) shouldn't reach into
+# the underscore-prefixed name directly.
+FIELDS = _FIELDS
+
 
 def _getenv(env: str | None) -> str | None:
     """os.getenv() that tolerates env=None (fields with no env-var
@@ -122,6 +126,13 @@ def load_config() -> dict:
 def _save_config(config: dict) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(config, indent=2) + "\n")
+
+
+def save_config(config: dict) -> None:
+    """Public wrapper around _save_config — for callers outside this
+    module (e.g. win_gui.py) that shouldn't reach into the private
+    name directly."""
+    _save_config(config)
 
 
 def ensure_config(*, interactive: bool = True) -> dict:

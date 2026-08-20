@@ -20,5 +20,8 @@ dependencies = [
 [project.scripts]
 rl-pfp = "rlpfp.cli:main"
 
+[project.gui-scripts]
+rl-pfp-gui = "rlpfp.win_gui:main"
+
 [tool.setuptools]
 packages = ["rlpfp"]
