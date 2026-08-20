@@ -97,8 +97,13 @@ SCOREBOARD_LAYOUTS = {
     # correctly at every row with the current ROW_HEIGHT_QUAD, so this
     # is a row0 base-value fix only, not a spacing issue.
     3: {"blue": 470, "orange": 822},  # was 490, then 474, 472, 471, 470
-    2: {"blue": 553, "orange": 812},  # was 756
-    1: {"blue": 617, "orange": 761},
+    # 2v2: blue confirmed correct as-is. Orange (blind "+1 row spacing"
+    # guess, never independently measured) confirmed 9px too high on real
+    # hardware -> 812+9=821.
+    2: {"blue": 553, "orange": 821},  # orange was 756, then 812
+    # 1v1: never independently measured until now. Blue confirmed 18px too
+    # high (617+18=635); orange confirmed 60px too high (761+60=821).
+    1: {"blue": 635, "orange": 821},  # blue was 617; orange was 761
 }
 
 SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
