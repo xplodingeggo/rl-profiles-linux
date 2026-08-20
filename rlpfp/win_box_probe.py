@@ -70,6 +70,8 @@ class BoxState:
 class ProbeApp:
     def __init__(self):
         self.state = BoxState()
+        self._recreate_after_id = None
+        self.overlay = None  # current overlay Toplevel — see _recreate_overlay()
 
         try:
             ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -81,69 +83,89 @@ class ProbeApp:
 
         self.screen_x, self.screen_y, self.screen_w, self.screen_h = _virtual_screen_rect()
 
-        self.overlay = tk.Tk()
-        self.overlay.overrideredirect(True)
-        self.overlay.attributes("-topmost", True)
-        self.overlay.configure(bg=TRANSPARENT_KEY)
-        self.overlay.attributes("-transparentcolor", TRANSPARENT_KEY)
-        self.overlay.geometry(f"{self.screen_w}x{self.screen_h}+{self.screen_x}+{self.screen_y}")
-
-        self.canvas = tk.Canvas(
-            self.overlay, width=self.screen_w, height=self.screen_h,
-            bg=TRANSPARENT_KEY, highlightthickness=0, bd=0,
-        )
-        self.canvas.pack(fill="both", expand=True)
-
-        # 150ms delay so Tk's own -transparentcolor setup lands before
-        # we touch the window's extended styles — see win_overlay.py's
-        # _make_click_through docstring for why this matters.
-        self.overlay.after(150, self._enable_click_through)
+        # Hidden root — just owns the mainloop and the control/overlay
+        # Toplevels, never shown itself.
+        self.root = tk.Tk()
+        self.root.withdraw()
 
         self._build_control_window()
-        self._redraw()
+        self._schedule_recreate()
 
-    def _enable_click_through(self):
-        self.overlay.update()  # full update, not just idletasks — flush the initial paint
-        try:
-            _make_click_through(self.overlay.winfo_id())
-        except Exception:
-            log.exception("Could not enable click-through")
+    def _schedule_recreate(self):
+        """Debounced — see _recreate_overlay()'s docstring for why the
+        overlay is rebuilt from scratch rather than redrawn in place,
+        and why that has to be deferred rather than called straight
+        from a Spinbox's change callback."""
+        if self._recreate_after_id is not None:
+            self.root.after_cancel(self._recreate_after_id)
+        self._recreate_after_id = self.root.after(50, self._recreate_overlay)
 
-    def _redraw(self):
+    def _recreate_overlay(self):
+        """Fully destroys and rebuilds the overlay window on every
+        redraw, instead of clearing/redrawing an existing Tk Canvas in
+        place.
+
+        Every targeted fix short of this still left a "ghost" box stuck
+        at a stale position under rapid successive redraws (confirmed
+        live, repeatedly, via an automated rapid-click stress test):
+        delaying the very first draw until after the window was
+        layered, forcing a full update()+RedrawWindow() on every
+        redraw (not just update_idletasks()), redrawing the entire
+        canvas background every time (not just the changed item), even
+        redrawing the canvas's own child HWND directly in addition to
+        the toplevel's, and debouncing to rule out update() reentering
+        from inside a Spinbox's own event callback. None of it stuck —
+        something about how DWM composites a WS_EX_LAYERED colorkey
+        window doesn't reliably discard old content no matter how it's
+        invalidated. A brand new HWND has no old composited surface for
+        a ghost to persist in, so this sidesteps the problem instead of
+        continuing to try to out-invalidate it.
+
+        Creates the new window (and layers it) BEFORE destroying the
+        old one, so there's always something visible — worst case a
+        single frame where both briefly coexist, not a gap.
+        """
+        self._recreate_after_id = None
+        old_overlay = self.overlay
         s = self.state
-        self.canvas.delete("all")
-        self.canvas.create_rectangle(
+
+        overlay = tk.Toplevel(self.root)
+        overlay.overrideredirect(True)
+        overlay.attributes("-topmost", True)
+        overlay.configure(bg=TRANSPARENT_KEY)
+        overlay.attributes("-transparentcolor", TRANSPARENT_KEY)
+        overlay.geometry(f"{self.screen_w}x{self.screen_h}+{self.screen_x}+{self.screen_y}")
+
+        canvas = tk.Canvas(
+            overlay, width=self.screen_w, height=self.screen_h,
+            bg=TRANSPARENT_KEY, highlightthickness=0, bd=0,
+        )
+        canvas.pack(fill="both", expand=True)
+        canvas.create_rectangle(
             s.x, s.y, s.x + s.w, s.y + s.h, outline="#ff0000", width=2,
         )
-        self.canvas.create_line(s.x - 8, s.y, s.x + 8, s.y, fill="#00ffff")
-        self.canvas.create_line(s.x, s.y - 8, s.x, s.y + 8, fill="#00ffff")
-        self.canvas.create_text(
+        canvas.create_line(s.x - 8, s.y, s.x + 8, s.y, fill="#00ffff")
+        canvas.create_line(s.x, s.y - 8, s.x, s.y + 8, fill="#00ffff")
+        canvas.create_text(
             s.x, max(0, s.y - 12),
             text=f"x={s.x:g} y={s.y:g} w={s.w:g} h={s.h:g}",
             fill="#ffff00", font=("Consolas", 10, "bold"), anchor="w",
         )
-        self._force_recomposite()
 
-    def _force_recomposite(self):
-        """canvas.delete("all") + recreate updates Tk's own internal
-        state fine, but a WS_EX_LAYERED|WS_EX_TRANSPARENT window (see
-        _make_click_through) doesn't reliably recomposite the actual
-        on-screen surface on its own afterward — the old box's pixels
-        stay visually "burned in" until forced, the same underlying
-        quirk win_overlay.py's black-screen fix worked around at
-        startup. Here it has to run on every redraw, not just once."""
-        self.overlay.update_idletasks()
+        overlay.update()  # flush this window's first paint before layering it
         try:
-            hwnd = self.overlay.winfo_id()
-            win32gui.RedrawWindow(
-                hwnd, None, None,
-                win32con.RDW_INVALIDATE | win32con.RDW_UPDATENOW | win32con.RDW_ALLCHILDREN,
-            )
+            _make_click_through(overlay.winfo_id())
         except Exception:
-            log.exception("Could not force recomposite")
+            log.exception("Could not enable click-through")
+
+        self.overlay = overlay
+        self.canvas = canvas
+
+        if old_overlay is not None:
+            old_overlay.destroy()
 
     def _build_control_window(self):
-        window = tk.Toplevel()
+        window = tk.Toplevel(self.root)
         window.title("box probe")
         window.geometry("260x220")
         window.attributes("-topmost", True)
@@ -155,7 +177,7 @@ class ProbeApp:
             def on_change(*_args):
                 try:
                     setattr(self.state, attr, var.get())
-                    self._redraw()
+                    self._schedule_recreate()
                 except tk.TclError:
                     pass  # mid-typing invalid float; ignore until it resolves
 
@@ -181,10 +203,10 @@ class ProbeApp:
         window.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _on_close(self):
-        self.overlay.destroy()
+        self.root.destroy()
 
     def run(self):
-        self.overlay.mainloop()
+        self.root.mainloop()
 
 
 def main():
