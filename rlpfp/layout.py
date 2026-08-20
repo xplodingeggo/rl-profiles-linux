@@ -169,10 +169,10 @@ _WINDOWS_SCOREBOARD_LAYOUTS = {
     # EXTRA_X_NUDGE/EXTRA_Y_QUAD below), s=1.0 target (548) preserved.
     # Orange (blind "+1 row spacing" guess, never independently
     # measured at s=1.0 or s=0.75) confirmed 25px too low at s=0.75:
-    # target is 822-25=797, then -2px more to 795 (final) — base reset
-    # to 795; EXTRA_Y_QUAD["orange"][2] keeps the previously-confirmed
-    # s=1.0 target (817) exact.
-    2: {"blue": 591, "orange": 795},  # blue was 553(s=1.0-only fudge)/535/593/592; orange was 756/812/821/822(s=1.0-only fudge)/797
+    # target is 822-25=797, then -2px to 795, then -1px more to 794
+    # (final) — base reset to 794; EXTRA_Y_QUAD["orange"][2] keeps the
+    # previously-confirmed s=1.0 target (817) exact.
+    2: {"blue": 591, "orange": 794},  # blue was 553(s=1.0-only fudge)/535/593/592; orange was 756/812/821/822(s=1.0-only fudge)/797/795
     # 1v1: blue box_probe target at s=0.75 was (716, 656), corrected by
     # 1px up-left to (715, 655) — base reset to 655, x nudge 2->1 (see
     # EXTRA_X_NUDGE/EXTRA_Y_QUAD below), s=1.0 target (632) still exact.
@@ -216,7 +216,7 @@ _WINDOWS_ROW_HEIGHT_QUAD = (88.0, -86.0, 72.0)  # c0 net +1 vs. original Linux c
 # Confirmed so far (base @ s=0.75 -> target @ s=1.0, gap = the extra
 # curve's value at s=1.0):
 #   orange 3v3: base 792 -> 817 (25px gap)
-#   orange 2v2: base 795 -> 817 (27px gap, after the 2px-higher fix)
+#   orange 2v2: base 794 -> 817 (28px gap, after the -2px and -1px fixes)
 #   orange 1v1: base 798 -> 817 (24px gap — all three orange team sizes
 #               converge on ~24-25px regardless of base/team_size;
 #               unconfirmed whether that's meaningful or coincidence,
@@ -235,7 +235,7 @@ _WINDOWS_EXTRA_Y_QUAD = {
     },
     "orange": {
         1: (192.0, -240.0, 72.0),
-        2: (216.0, -270.0, 81.0),
+        2: (224.0, -280.0, 84.0),
         3: (240.0, -300.0, 90.0),
     },
 }
