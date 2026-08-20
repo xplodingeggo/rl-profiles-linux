@@ -2,13 +2,15 @@
 rl-pfp — unified CLI entrypoint.
 
     rl-pfp                    same as `rl-pfp start`
-    rl-pfp start [--debug] [--verbose]
+    rl-pfp start [--debug] [--verbose] [--linux-calibration]
                                     run rl_stats_bridge + win_overlay + win_controller
                                     (foreground). --debug: overlay HUD only. --verbose:
                                     bridge per-request access logs (noisy, off by default —
                                     was previously (and confusingly) tied to --debug, which
                                     buried real status lines like the controller's "no
-                                    controller connected, retrying" under a wall of HTTP logs)
+                                    controller connected, retrying" under a wall of HTTP logs).
+                                    --linux-calibration: experimental A/B flag, use the original
+                                    unmodified Linux calibration constants for this run
     rl-pfp status                query a running bridge, print state, exit
     rl-pfp config                  interactively view/edit config.json (steam/psn/xbox keys,
                                      bridge_venv_python — pfp_resolver.py bootstraps the actual
@@ -65,6 +67,7 @@ def _cmd_start(args: argparse.Namespace) -> int:
     return supervisor.run(
         debug=args.debug, verbose=args.verbose,
         bridge_python=bridge_python, ui_scale=ui_scale,
+        linux_calibration=args.linux_calibration,
     )
 
 
@@ -156,6 +159,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--ui-scale", type=float, default=None,
         help="override rl_ui_scale for this run (e.g. 75 or 0.75 both mean 75%%), "
              "passed to the overlay only — doesn't touch config.json",
+    )
+    p_start.add_argument(
+        "--linux-calibration", action="store_true",
+        help="experimental: use the ORIGINAL, unmodified Linux calibration "
+             "constants instead of the Windows-patched ones, for this run only "
+             "(A/B testing whether the Windows-specific row0/orange/nameplate "
+             "patches were actually needed — see layout.py's "
+             "_load_use_linux_calibration() docstring)",
     )
     p_start.set_defaults(func=_cmd_start)
 

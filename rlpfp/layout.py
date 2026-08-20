@@ -63,6 +63,27 @@ def _load_ui_scale() -> float:
 
 UI_SCALE = _load_ui_scale()
 
+
+def _load_use_linux_calibration() -> bool:
+    """Experimental A/B flag (RL_LINUX_CALIBRATION=1) that swaps every
+    calibrated constant below for the ORIGINAL, untouched Linux
+    numbers — no Windows-specific row0/orange/nameplate corrections
+    applied at all. Those were all measured at 75% and ported to other
+    scales purely through the quad math; the theory being tested is
+    that the quad math alone was always correct, and the growing pile
+    of Windows-only patches was compensating for something else
+    entirely (e.g. a measurement or window-geometry issue) rather than
+    a real difference between the two OSes' rendering. Deliberately an
+    env var, not a config.json field — this is a one-off comparison
+    tool, not a setting anyone should leave on by accident."""
+    raw = os.environ.get("RL_LINUX_CALIBRATION", "")
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+USE_LINUX_CALIBRATION = _load_use_linux_calibration()
+if USE_LINUX_CALIBRATION:
+    log.info("RL_LINUX_CALIBRATION=1 — using the original Linux calibration constants, unmodified")
+
 ROW_HEIGHT = 56  # vertical spacing between rows within a team's section
 BOX_SIZE = 48  # size_px = 64 * UI_SCALE (linear, confirmed: 32@0.5, 48@0.75, 64@1.0)
 SLOT_X = 714  # horizontal position — same for both teams, all sizes (probe-measured @ 0.75, 3v3)
@@ -70,7 +91,29 @@ SLOT_X = 714  # horizontal position — same for both teams, all sizes (probe-me
 # How many pixels to shrink every avatar picture on each side (0 = off).
 AVATAR_INSET_PX = 0
 
-SCOREBOARD_LAYOUTS = {
+# --- Original Linux calibration (measured at 75% UI scale, ported to
+# other scales purely via the quad math below) — kept verbatim as the
+# RL_LINUX_CALIBRATION=1 comparison baseline. See _load_use_linux_
+# calibration()'s docstring for why this exists. -----------------------
+_LINUX_ORIGINAL_SCOREBOARD_LAYOUTS = {
+    4: {"blue": 428, "orange": 756},
+    3: {"blue": 490, "orange": 754},
+    2: {"blue": 553, "orange": 756},
+    1: {"blue": 617, "orange": 761},
+}
+_LINUX_ORIGINAL_SCOREBOARD_UI_QUAD = {
+    "x": (0.0, -756.0, 1281.0),
+    "y": (4.0, -179.0, 685.0),
+    "size": (0.0, 64.0, 0.0),
+}
+_LINUX_ORIGINAL_ROW_HEIGHT_QUAD = (88.0, -86.0, 72.0)
+_LINUX_ORIGINAL_NAMEPLATE_UI_QUAD = {
+    "x": (8.0, -322.0, 237.0),
+    "y": (-16.0, -271.0, 1396.0),
+    "size": (0.0, 100.0, 0.0),
+}
+
+_WINDOWS_SCOREBOARD_LAYOUTS = {
     # orange +ROW_HEIGHT (56) on Windows for 4/3/2: confirmed on real
     # hardware that orange row0 was rendering exactly one row spacing
     # too high in 2v2 and 3v3 (almost certainly 4v4 too) — same class
@@ -101,9 +144,10 @@ SCOREBOARD_LAYOUTS = {
     # this reference-scale (0.75) base shifts EVERY scale by the same
     # amount, since this value feeds straight through when s==0.75 (no
     # quad correction applies there). box_probe re-measured directly at
-    # s=0.75 and got y=795 — so 822 was simply wrong as a reference
-    # value; this is back to 795 (== the real target at 0.75), and the
-    # extra needed specifically at s=1.0 now lives in
+    # s=0.75: first pass gave y=795, corrected to y=789 (was measured
+    # wrong by 6px, user caught it on a second look) — so 822 was simply
+    # wrong as a reference value; this is now 789 (the real target at
+    # 0.75), and the extra needed specifically at s=1.0 now lives in
     # ORANGE_EXTRA_Y_QUAD below instead of here. See that dict's comment
     # for why orange needs its own extra curve on top of the shared one.
     # 3v3 blue: user confirmed it renders 16px too low — moved to 474
@@ -111,7 +155,7 @@ SCOREBOARD_LAYOUTS = {
     # dialed in with box_probe). Orange in the same lobby size renders
     # correctly at every row with the current ROW_HEIGHT_QUAD, so this
     # is a row0 base-value fix only, not a spacing issue.
-    3: {"blue": 470, "orange": 795},  # was 490/822(s=1.0-only fudge); now the real s=0.75 reference value
+    3: {"blue": 470, "orange": 789},  # was 490/822(s=1.0-only fudge)/795(6px measurement error); now the real s=0.75 reference value
     # 2v2: blue confirmed correct as-is. Orange (blind "+1 row spacing"
     # guess, never independently measured) confirmed 9px too high on real
     # hardware -> 812+9=821, then +1px more (822) on final dial-in.
@@ -122,7 +166,7 @@ SCOREBOARD_LAYOUTS = {
     1: {"blue": 637, "orange": 822},  # blue was 617, 635; orange was 761, 821
 }
 
-SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
+_WINDOWS_SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
     # x/y refit on Windows: team_size=2 blue row0 target at s=1.0 is
     # x=526, y=548 (final +1px y nudge on top of the prior 526/547
     # pass). Refit through the SAME trusted s=0.5/s=0.75 points from
@@ -133,28 +177,29 @@ SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
     "y": (308.0, -559.0, 799.0),
     "size": (0.0, 64.0, 0.0),
 }
-ROW_HEIGHT_QUAD = (88.0, -86.0, 74.0)  # c0 +3 total: +1 from original Linux calibration, +2 more on Windows — row1/row2/row3 have no calibration point of their own (pure ROW_HEIGHT_QUAD math), and were rendering too close together at every scale; same uniform-shift approach as the original +1
+_WINDOWS_ROW_HEIGHT_QUAD = (88.0, -86.0, 74.0)  # c0 +3 total: +1 from original Linux calibration, +2 more on Windows — row1/row2/row3 have no calibration point of their own (pure ROW_HEIGHT_QUAD math), and were rendering too close together at every scale; same uniform-shift approach as the original +1
 
 # Orange's row0 doesn't scale with UI scale the same way blue's does —
 # likely anchored to a "VS"/divider element between the two teams that
 # itself scales differently, so SCOREBOARD_UI_QUAD's shared y-curve
 # (fit from BLUE's measurements) systematically undershoots orange's
-# movement between scales. Confirmed on 3v3: box_probe measured y=795
-# at s=0.75 and y=817 at s=1.0 — plugging those into the shared curve
-# alone predicts ~790 at s=1.0 from an s=0.75 base of 795, a 27px miss.
+# movement between scales. Confirmed on 3v3: box_probe measured y=789
+# at s=0.75 (corrected from an initial 795 — first measurement was 6px
+# off) and y=817 at s=1.0 — plugging those into the shared curve alone
+# predicts ~784 at s=1.0 from an s=0.75 base of 789, a 33px miss.
 # This is an ADDITIONAL delta layered on top of the normal _scale_slot
 # math (added to the reference y before it goes in), fit through s=0.5
 # (no data yet — assumed 0, same "trusted" placeholder default used
 # elsewhere in this file for unmeasured points), s=0.75 (forced to 0 —
 # SCOREBOARD_LAYOUTS' orange base IS the s=0.75 target directly now),
-# and s=1.0 (forced to the measured 27px gap).
+# and s=1.0 (forced to the measured 33px gap).
 # Only 3v3 is confirmed so far. Other team sizes almost certainly need
 # their own entry here too (see SCOREBOARD_LAYOUTS' orange comment) —
 # add them the same way once box_probe-measured at s=0.75.
-ORANGE_EXTRA_Y_QUAD = {
-    3: (216.0, -270.0, 81.0),
+_WINDOWS_ORANGE_EXTRA_Y_QUAD = {
+    3: (264.0, -330.0, 99.0),
 }
-NAMEPLATE_UI_QUAD = {
+_WINDOWS_NAMEPLATE_UI_QUAD = {
     # x/y refit on Windows: box_probe-measured target at s=1.0 is
     # x=969, y=1150 (final -1px x nudge on top of the prior 970/1150
     # pass — dead on target now). Refit through the SAME trusted
@@ -165,6 +210,23 @@ NAMEPLATE_UI_QUAD = {
     "y": (304.0, -671.0, 1516.0),
     "size": (0.0, 100.0, 0.0),
 }
+
+# --- Active set — RL_LINUX_CALIBRATION=1 swaps in the untouched Linux
+# originals (with no orange-extra correction, since that's a
+# Windows-specific patch with no Linux equivalent); otherwise the
+# Windows-calibrated constants above. -----------------------------------
+if USE_LINUX_CALIBRATION:
+    SCOREBOARD_LAYOUTS = _LINUX_ORIGINAL_SCOREBOARD_LAYOUTS
+    SCOREBOARD_UI_QUAD = _LINUX_ORIGINAL_SCOREBOARD_UI_QUAD
+    ROW_HEIGHT_QUAD = _LINUX_ORIGINAL_ROW_HEIGHT_QUAD
+    NAMEPLATE_UI_QUAD = _LINUX_ORIGINAL_NAMEPLATE_UI_QUAD
+    ORANGE_EXTRA_Y_QUAD = {}
+else:
+    SCOREBOARD_LAYOUTS = _WINDOWS_SCOREBOARD_LAYOUTS
+    SCOREBOARD_UI_QUAD = _WINDOWS_SCOREBOARD_UI_QUAD
+    ROW_HEIGHT_QUAD = _WINDOWS_ROW_HEIGHT_QUAD
+    NAMEPLATE_UI_QUAD = _WINDOWS_NAMEPLATE_UI_QUAD
+    ORANGE_EXTRA_Y_QUAD = _WINDOWS_ORANGE_EXTRA_Y_QUAD
 
 GOAL_NAMEPLATE_X_NUDGE = 3
 GOAL_NAMEPLATE_Y_NUDGE = -35.25

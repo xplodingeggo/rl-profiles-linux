@@ -42,7 +42,7 @@ from .config import CACHE_DIR
 BRIDGE_URL = "http://127.0.0.1:9090"
 
 
-def _overlay_env(ui_scale: float | None = None) -> dict[str, str]:
+def _overlay_env(ui_scale: float | None = None, linux_calibration: bool = False) -> dict[str, str]:
     """Extra env vars for the overlay child specifically (not bridge/
     controller, which don't need this)."""
     env: dict[str, str] = {}
@@ -53,6 +53,12 @@ def _overlay_env(ui_scale: float | None = None) -> dict[str, str]:
         # overlays) — so this overrides config.json for this run only,
         # without touching the file itself.
         env["RL_UI_SCALE"] = str(ui_scale)
+
+    if linux_calibration:
+        # See layout._load_use_linux_calibration()'s docstring — swaps
+        # in the untouched original Linux calibration constants for
+        # this run, for A/B comparison against the Windows-patched ones.
+        env["RL_LINUX_CALIBRATION"] = "1"
 
     return env
 BRIDGE_READY_TIMEOUT_SECONDS = 15
@@ -170,6 +176,7 @@ def run(
     *, debug: bool, verbose: bool,
     bridge_python: str | None = None,
     ui_scale: float | None = None,
+    linux_calibration: bool = False,
 ) -> int:
     """
     Starts bridge, overlay, controller as child processes and blocks
@@ -185,6 +192,9 @@ def run(
 
     ui_scale: overrides rl_ui_scale/$RL_UI_SCALE for the overlay child
     only, for this run — see `rl-pfp start --ui-scale`.
+
+    linux_calibration: overlay-only, for this run — see `rl-pfp start
+    --linux-calibration` / layout._load_use_linux_calibration().
     """
     bridge_interpreter = bridge_python or sys.executable
 
@@ -200,7 +210,7 @@ def run(
 
     children: dict[str, Child] = {
         "bridge": Child("bridge", bridge_argv, extra_env=_foreign_interpreter_env(bridge_interpreter)),
-        "overlay": Child("overlay", overlay_argv, extra_env=_overlay_env(ui_scale)),
+        "overlay": Child("overlay", overlay_argv, extra_env=_overlay_env(ui_scale, linux_calibration)),
         "controller": Child("controller", controller_argv, extra_env=_foreign_interpreter_env(bridge_interpreter)),
     }
 
