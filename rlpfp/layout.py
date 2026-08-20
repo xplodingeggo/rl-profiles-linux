@@ -287,7 +287,33 @@ else:
     EXTRA_X_NUDGE = _WINDOWS_EXTRA_X_NUDGE
 
 GOAL_NAMEPLATE_X_NUDGE = 3
-GOAL_NAMEPLATE_Y_NUDGE = -35.25
+_LINUX_ORIGINAL_GOAL_NAMEPLATE_Y_NUDGE = -35.25
+# Windows Y_NUDGE was also -35.25 (same as Linux's, untouched) until
+# tuned at s=1.0 only — same s=1.0-only-fudge bug class as the
+# scoreboard rows — the whole reference-scale value fed straight
+# through unmodified at s=0.75 since NAMEPLATE_UI_QUAD's own delta is
+# zero there by construction. box_probe-measured target at s=0.75 is
+# (1047, 1223) — matches the x=1047 this already produced, but y
+# needed +38 (1185->1223). Nudge reset to +3 (1220+3=1223, the real
+# s=0.75 reference value); _WINDOWS_NAMEPLATE_EXTRA_Y_QUAD below keeps
+# the previously-confirmed s=1.0 target (1150) exact, same mechanism as
+# EXTRA_Y_QUAD for scoreboard rows.
+_WINDOWS_GOAL_NAMEPLATE_Y_NUDGE = 3.0
+# Zero at s=0.5 (unmeasured, assumed) and s=0.75 (forced — the
+# reference slot above IS the s=0.75 target now), forced to whatever
+# gap is needed at s=1.0 to still land on the previously-confirmed
+# target (1150) after the Y_NUDGE change above moved the reference
+# value. No Linux-mode equivalent (Linux keeps the original, untouched
+# Y_NUDGE, so it needs no correction).
+_WINDOWS_NAMEPLATE_EXTRA_Y_QUAD = (-306.0, 382.5, -114.75)
+
+if USE_LINUX_CALIBRATION:
+    GOAL_NAMEPLATE_Y_NUDGE = _LINUX_ORIGINAL_GOAL_NAMEPLATE_Y_NUDGE
+    NAMEPLATE_EXTRA_Y_QUAD = (0.0, 0.0, 0.0)
+else:
+    GOAL_NAMEPLATE_Y_NUDGE = _WINDOWS_GOAL_NAMEPLATE_Y_NUDGE
+    NAMEPLATE_EXTRA_Y_QUAD = _WINDOWS_NAMEPLATE_EXTRA_Y_QUAD
+
 _GOAL_NAMEPLATE_REFERENCE_SLOT = (
     1044 + GOAL_NAMEPLATE_X_NUDGE,
     1220 + GOAL_NAMEPLATE_Y_NUDGE,
@@ -387,7 +413,9 @@ def get_scoreboard_slots(team_size: int) -> list:
 
 
 def get_goal_nameplate_slot() -> tuple:
-    return _scale_slot(*_GOAL_NAMEPLATE_REFERENCE_SLOT, NAMEPLATE_UI_QUAD)
+    x, y, w, h = _GOAL_NAMEPLATE_REFERENCE_SLOT
+    y += _quad(NAMEPLATE_EXTRA_Y_QUAD, UI_SCALE)
+    return _scale_slot(x, y, w, h, NAMEPLATE_UI_QUAD)
 
 
 class BridgeState:
