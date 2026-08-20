@@ -156,10 +156,11 @@ _WINDOWS_SCOREBOARD_LAYOUTS = {
     # box_probe) — but that means it's suspect at every OTHER scale for
     # the exact same reason 3v3 orange was: an s=1.0-only measurement
     # baked into this reference-scale base. box_probe-measured target
-    # at s=0.75: (716, 530), corrected 1px up-left to (715, 529) —
-    # base reset to 529, x nudge +2->+1 (see EXTRA_X_NUDGE/
-    # EXTRA_Y_QUAD below), s=1.0 target (465) preserved.
-    3: {"blue": 529, "orange": 792},  # blue was 490/470(s=1.0-only fudge)/530; orange was 490/822(fudge)/795(6px error)/789/790
+    # at s=0.75: (716, 530), corrected 1px up-left to (715, 529), then
+    # 1px up-left again to (714, 528) (final — x nudge now 0, exactly
+    # SLOT_X) — base reset to 528 (see EXTRA_X_NUDGE/EXTRA_Y_QUAD
+    # below), s=1.0 target (465) preserved.
+    3: {"blue": 528, "orange": 792},  # blue was 490/470(s=1.0-only fudge)/530/529; orange was 490/822(fudge)/795(6px error)/789/790
     # 2v2: blue "confirmed correct as-is" was only ever checked at
     # s=1.0 (548, base 553 + shared dy(1.0)=-5) — same s=1.0-only
     # blind spot as everything else here. Confirmed broken at s=0.75:
@@ -219,7 +220,7 @@ _WINDOWS_ROW_HEIGHT_QUAD = (88.0, -86.0, 74.0)  # c0 +3 total: +1 from original 
 #               converge on ~24-25px regardless of base/team_size;
 #               unconfirmed whether that's meaningful or coincidence,
 #               but each is still fit independently)
-#   blue   3v3: base 529 -> 465 (-59px gap, after the 1px up-left fix)
+#   blue   3v3: base 528 -> 465 (-58px gap, after two 1px up-left fixes)
 #   blue   2v2: base 535 -> 548 (18px gap)
 #   blue   1v1: base 655 -> 632 (-18px gap, after the 1px up-left fix)
 # Everything else still has its s=1.0-only calibration baked directly
@@ -229,7 +230,7 @@ _WINDOWS_EXTRA_Y_QUAD = {
     "blue": {
         1: (-144.0, 180.0, -54.0),
         2: (144.0, -180.0, 54.0),
-        3: (-472.0, 590.0, -177.0),
+        3: (-464.0, 580.0, -174.0),
     },
     "orange": {
         1: (192.0, -240.0, 72.0),
@@ -239,15 +240,15 @@ _WINDOWS_EXTRA_Y_QUAD = {
 }
 
 # Same idea as EXTRA_Y_QUAD but for x, and flat (not scale-dependent) —
-# only s=0.75 measurements exist so far (1v1 blue: x=715, 1px right of
-# the shared SLOT_X-derived 714; 3v3 blue: x=715, also 1px right), not
-# enough to fit a curve per team_size, so each applies uniformly at
-# every scale until an s=1.0 measurement either confirms that or shows
-# it also needs its own curve like EXTRA_Y_QUAD.
+# only an s=0.75 measurement exists so far (1v1 blue: x=715, 1px right
+# of the shared SLOT_X-derived 714), not enough to fit a curve, so it
+# applies uniformly at every scale until an s=1.0 measurement either
+# confirms that or shows it also needs its own curve like EXTRA_Y_QUAD.
+# 3v3 blue's x turned out to need no nudge at all (settled at 714 ==
+# SLOT_X after two 1px-left corrections) — no entry needed.
 _WINDOWS_EXTRA_X_NUDGE = {
     "blue": {
         1: 1,
-        3: 1,
     },
 }
 _WINDOWS_NAMEPLATE_UI_QUAD = {
