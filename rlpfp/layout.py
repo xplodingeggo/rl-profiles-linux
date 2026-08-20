@@ -122,13 +122,14 @@ _WINDOWS_SCOREBOARD_LAYOUTS = {
     # low" note this project's Linux history carries for that case).
     # 1v1 not reported broken, left untouched.
     #
-    # IMPORTANT: every orange row0 base below (except 3v3, fixed) still
-    # has its s=1.0-only pixel correction baked directly into this
-    # reference-scale (0.75) value — the same bug that broke 3v3 at 75%
-    # scale (see 3v3's comment + ORANGE_EXTRA_Y_QUAD below for the fix
-    # and full explanation). 1v1/2v2/4v4 orange are only known-correct
-    # at s=1.0 right now; treat them as broken at any other UI scale
-    # until each gets the same two-point (0.75 + 1.0) re-measurement.
+    # IMPORTANT: every row0 base below EXCEPT 3v3 orange/blue and 1v1
+    # blue (fixed) still has its s=1.0-only pixel correction baked
+    # directly into this reference-scale (0.75) value — the same bug
+    # that broke 3v3 orange / 1v1 blue at 75% scale (see those entries'
+    # comments + EXTRA_Y_QUAD below for the fix and full explanation).
+    # Everything else is only known-correct at s=1.0 right now; treat
+    # it as broken at any other UI scale until it gets the same
+    # two-point (0.75 + 1.0) re-measurement.
     # 4v4 orange: blind "+1 row spacing" guess (756->812) needed a
     # further +10/11px, same pattern as 3v3's orange fix — 823 (final
     # y=818). Blue: user confirmed it renders 38-40px too low (~39,
@@ -144,26 +145,34 @@ _WINDOWS_SCOREBOARD_LAYOUTS = {
     # this reference-scale (0.75) base shifts EVERY scale by the same
     # amount, since this value feeds straight through when s==0.75 (no
     # quad correction applies there). box_probe re-measured directly at
-    # s=0.75: first pass gave y=795, corrected to y=789 (was measured
-    # wrong by 6px, user caught it on a second look) — so 822 was simply
-    # wrong as a reference value; this is now 789 (the real target at
-    # 0.75), and the extra needed specifically at s=1.0 now lives in
-    # ORANGE_EXTRA_Y_QUAD below instead of here. See that dict's comment
-    # for why orange needs its own extra curve on top of the shared one.
-    # 3v3 blue: user confirmed it renders 16px too low — moved to 474
-    # (was 490), then -2px to 472, -1px to 471, -1px more to 470 (final,
-    # dialed in with box_probe). Orange in the same lobby size renders
-    # correctly at every row with the current ROW_HEIGHT_QUAD, so this
-    # is a row0 base-value fix only, not a spacing issue.
-    3: {"blue": 470, "orange": 789},  # was 490/822(s=1.0-only fudge)/795(6px measurement error); now the real s=0.75 reference value
+    # s=0.75: first pass gave y=795, corrected to y=789 (6px measurement
+    # error), then +1px more to y=790 (final) — so 822 was simply wrong
+    # as a reference value; this is now 790 (the real target at 0.75),
+    # and the extra needed specifically at s=1.0 now lives in
+    # EXTRA_Y_QUAD["orange"] below instead of here. See that dict's
+    # comment for why orange needs its own extra curve on top of the
+    # shared one.
+    # 3v3 blue: was confirmed correct at s=1.0 (470, dialed in with
+    # box_probe) — but that means it's suspect at every OTHER scale for
+    # the exact same reason 3v3 orange was: an s=1.0-only measurement
+    # baked into this reference-scale base. Confirmed broken at s=0.75
+    # too (renders ~1 row-height too high — see EXTRA_Y_QUAD["blue"]'s
+    # comment), still needs an exact box_probe target before it can be
+    # fixed the same way orange was.
+    3: {"blue": 470, "orange": 790},  # orange was 490/822(s=1.0-only fudge)/795(6px error)/789(+1px)
     # 2v2: blue confirmed correct as-is. Orange (blind "+1 row spacing"
     # guess, never independently measured) confirmed 9px too high on real
     # hardware -> 812+9=821, then +1px more (822) on final dial-in.
     2: {"blue": 553, "orange": 822},  # orange was 756, then 812, 821
     # 1v1: never independently measured until now. Blue confirmed 18px too
-    # high (617+18=635), then +2px more (637). Orange confirmed 60px too
-    # high (761+60=821), then +1px more (822).
-    1: {"blue": 637, "orange": 822},  # blue was 617, 635; orange was 761, 821
+    # high (617+18=635), then +2px more (637) — all at s=1.0, same
+    # s=1.0-only-fudge bug as orange. box_probe at s=0.75: target is
+    # x=716, y=656 — base reset to that (the real 0.75 reference value)
+    # and x/y extras added below (EXTRA_X_NUDGE / EXTRA_Y_QUAD) to still
+    # hit the previously-confirmed s=1.0 target (632) exactly.
+    # Orange confirmed 60px too high (761+60=821), then +1px more (822)
+    # — same s=1.0-only bug, still needs its own s=0.75 re-measurement.
+    1: {"blue": 656, "orange": 822},  # blue was 617/635/637(s=1.0-only fudge); orange was 761, 821
 }
 
 _WINDOWS_SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
@@ -179,25 +188,48 @@ _WINDOWS_SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s 
 }
 _WINDOWS_ROW_HEIGHT_QUAD = (88.0, -86.0, 74.0)  # c0 +3 total: +1 from original Linux calibration, +2 more on Windows — row1/row2/row3 have no calibration point of their own (pure ROW_HEIGHT_QUAD math), and were rendering too close together at every scale; same uniform-shift approach as the original +1
 
-# Orange's row0 doesn't scale with UI scale the same way blue's does —
-# likely anchored to a "VS"/divider element between the two teams that
-# itself scales differently, so SCOREBOARD_UI_QUAD's shared y-curve
-# (fit from BLUE's measurements) systematically undershoots orange's
-# movement between scales. Confirmed on 3v3: box_probe measured y=789
-# at s=0.75 (corrected from an initial 795 — first measurement was 6px
-# off) and y=817 at s=1.0 — plugging those into the shared curve alone
-# predicts ~784 at s=1.0 from an s=0.75 base of 789, a 33px miss.
-# This is an ADDITIONAL delta layered on top of the normal _scale_slot
-# math (added to the reference y before it goes in), fit through s=0.5
-# (no data yet — assumed 0, same "trusted" placeholder default used
-# elsewhere in this file for unmeasured points), s=0.75 (forced to 0 —
-# SCOREBOARD_LAYOUTS' orange base IS the s=0.75 target directly now),
-# and s=1.0 (forced to the measured 33px gap).
-# Only 3v3 is confirmed so far. Other team sizes almost certainly need
-# their own entry here too (see SCOREBOARD_LAYOUTS' orange comment) —
-# add them the same way once box_probe-measured at s=0.75.
-_WINDOWS_ORANGE_EXTRA_Y_QUAD = {
-    3: (264.0, -330.0, 99.0),
+# Neither team's row0 scales with UI scale exactly the way
+# SCOREBOARD_UI_QUAD's shared y-curve predicts — it was fit from a
+# single blue measurement, and both teams turn out to drift from it by
+# their own team/size-specific amount (orange more visibly, but 1v1
+# blue confirmed it too — likely each team/row-count combo has its own
+# anchor, e.g. a "VS"/divider element, or vertical centering that
+# depends on how many rows are in the block, neither of which scales
+# linearly the same way row-to-row spacing does).
+#
+# EXTRA_Y_QUAD is an ADDITIONAL delta layered on top of the normal
+# _scale_slot math (added to the reference y before it goes in), fit
+# per (team, team_size) through s=0.5 (no data yet — assumed 0, same
+# "trusted" placeholder default used elsewhere in this file for
+# unmeasured points), s=0.75 (forced to 0 — SCOREBOARD_LAYOUTS' base IS
+# the s=0.75 target directly now), and s=1.0 (forced to whatever gap
+# the s=1.0 measurement leaves after the shared curve is applied).
+#
+# Confirmed so far:
+#   orange 3v3: box_probe y=790 @ s=0.75, y=817 @ s=1.0 (32px gap)
+#   blue   1v1: box_probe y=656 @ s=0.75, y=632 @ s=1.0 (-19px gap)
+# Everything else still has its s=1.0-only calibration baked directly
+# into SCOREBOARD_LAYOUTS (see that dict's comments) and needs the same
+# two-point re-measurement before it can be trusted off 100% scale.
+_WINDOWS_EXTRA_Y_QUAD = {
+    "blue": {
+        1: (-152.0, 190.0, -57.0),
+    },
+    "orange": {
+        3: (256.0, -320.0, 96.0),
+    },
+}
+
+# Same idea as EXTRA_Y_QUAD but for x, and flat (not scale-dependent) —
+# only one measurement exists so far (1v1 blue: box_probe x=716 @
+# s=0.75, 2px right of the shared SLOT_X-derived 714), not enough to
+# fit a curve, so this applies uniformly at every scale until an s=1.0
+# measurement either confirms that or shows it also needs its own
+# curve like EXTRA_Y_QUAD.
+_WINDOWS_EXTRA_X_NUDGE = {
+    "blue": {
+        1: 2,
+    },
 }
 _WINDOWS_NAMEPLATE_UI_QUAD = {
     # x/y refit on Windows: box_probe-measured target at s=1.0 is
@@ -220,13 +252,15 @@ if USE_LINUX_CALIBRATION:
     SCOREBOARD_UI_QUAD = _LINUX_ORIGINAL_SCOREBOARD_UI_QUAD
     ROW_HEIGHT_QUAD = _LINUX_ORIGINAL_ROW_HEIGHT_QUAD
     NAMEPLATE_UI_QUAD = _LINUX_ORIGINAL_NAMEPLATE_UI_QUAD
-    ORANGE_EXTRA_Y_QUAD = {}
+    EXTRA_Y_QUAD = {}
+    EXTRA_X_NUDGE = {}
 else:
     SCOREBOARD_LAYOUTS = _WINDOWS_SCOREBOARD_LAYOUTS
     SCOREBOARD_UI_QUAD = _WINDOWS_SCOREBOARD_UI_QUAD
     ROW_HEIGHT_QUAD = _WINDOWS_ROW_HEIGHT_QUAD
     NAMEPLATE_UI_QUAD = _WINDOWS_NAMEPLATE_UI_QUAD
-    ORANGE_EXTRA_Y_QUAD = _WINDOWS_ORANGE_EXTRA_Y_QUAD
+    EXTRA_Y_QUAD = _WINDOWS_EXTRA_Y_QUAD
+    EXTRA_X_NUDGE = _WINDOWS_EXTRA_X_NUDGE
 
 GOAL_NAMEPLATE_X_NUDGE = 3
 GOAL_NAMEPLATE_Y_NUDGE = -35.25
@@ -314,18 +348,17 @@ def get_scoreboard_slots(team_size: int) -> list:
     current RL window geometry + UI scale (see _scale_slot)."""
     team_size = max(1, min(4, team_size))
     layout = SCOREBOARD_LAYOUTS[team_size]
-    blue_row0_y = layout["blue"]
-    orange_row0_y = layout["orange"]
-    if team_size in ORANGE_EXTRA_Y_QUAD:
-        orange_row0_y += _quad(ORANGE_EXTRA_Y_QUAD[team_size], UI_SCALE)
     row_height = _scaled_row_height()
     slots = []
-    for row in range(team_size):
-        x, y, w, h = _scale_slot(SLOT_X, blue_row0_y + row * row_height, BOX_SIZE, BOX_SIZE, SCOREBOARD_UI_QUAD)
-        slots.append(("blue", row, x, y, w, h))
-    for row in range(team_size):
-        x, y, w, h = _scale_slot(SLOT_X, orange_row0_y + row * row_height, BOX_SIZE, BOX_SIZE, SCOREBOARD_UI_QUAD)
-        slots.append(("orange", row, x, y, w, h))
+    for team in ("blue", "orange"):
+        row0_x = SLOT_X + EXTRA_X_NUDGE.get(team, {}).get(team_size, 0)
+        row0_y = layout[team]
+        extra_y = EXTRA_Y_QUAD.get(team, {}).get(team_size)
+        if extra_y is not None:
+            row0_y += _quad(extra_y, UI_SCALE)
+        for row in range(team_size):
+            x, y, w, h = _scale_slot(row0_x, row0_y + row * row_height, BOX_SIZE, BOX_SIZE, SCOREBOARD_UI_QUAD)
+            slots.append((team, row, x, y, w, h))
     return slots
 
 
