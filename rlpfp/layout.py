@@ -164,14 +164,14 @@ _WINDOWS_SCOREBOARD_LAYOUTS = {
     # 2v2: blue "confirmed correct as-is" was only ever checked at
     # s=1.0 (548, base 553 + shared dy(1.0)=-5) — same s=1.0-only
     # blind spot as everything else here. box_probe target at s=0.75:
-    # (716, 593), corrected 1px up-left to (715, 592) — base reset to
-    # 592, x nudge +2->+1 (see EXTRA_X_NUDGE/EXTRA_Y_QUAD below), s=1.0
-    # target (548) preserved.
+    # (716, 593), corrected 1px up-left to (715, 592), then +1px more
+    # up to (715, 591) (final) — base reset to 591, x nudge +2->+1 (see
+    # EXTRA_X_NUDGE/EXTRA_Y_QUAD below), s=1.0 target (548) preserved.
     # Orange (blind "+1 row spacing" guess, never independently
     # measured at s=1.0 or s=0.75) confirmed 25px too low at s=0.75:
     # target is 822-25=797. Base reset to 797; EXTRA_Y_QUAD["orange"][2]
     # keeps the previously-confirmed s=1.0 target (817) exact.
-    2: {"blue": 592, "orange": 797},  # blue was 553(s=1.0-only fudge)/535/593; orange was 756/812/821/822(s=1.0-only fudge)
+    2: {"blue": 591, "orange": 797},  # blue was 553(s=1.0-only fudge)/535/593/592; orange was 756/812/821/822(s=1.0-only fudge)
     # 1v1: blue box_probe target at s=0.75 was (716, 656), corrected by
     # 1px up-left to (715, 655) — base reset to 655, x nudge 2->1 (see
     # EXTRA_X_NUDGE/EXTRA_Y_QUAD below), s=1.0 target (632) still exact.
@@ -221,7 +221,7 @@ _WINDOWS_ROW_HEIGHT_QUAD = (88.0, -86.0, 72.0)  # c0 net +1 vs. original Linux c
 #               unconfirmed whether that's meaningful or coincidence,
 #               but each is still fit independently)
 #   blue   3v3: base 528 -> 465 (-58px gap, after two 1px up-left fixes)
-#   blue   2v2: base 592 -> 548 (-39px gap, after the 1px up-left fix)
+#   blue   2v2: base 591 -> 548 (-38px gap, after two 1px up fixes)
 #   blue   1v1: base 655 -> 632 (-18px gap, after the 1px up-left fix)
 # Everything else still has its s=1.0-only calibration baked directly
 # into SCOREBOARD_LAYOUTS (see that dict's comments) and needs the same
@@ -229,7 +229,7 @@ _WINDOWS_ROW_HEIGHT_QUAD = (88.0, -86.0, 72.0)  # c0 net +1 vs. original Linux c
 _WINDOWS_EXTRA_Y_QUAD = {
     "blue": {
         1: (-144.0, 180.0, -54.0),
-        2: (-312.0, 390.0, -117.0),
+        2: (-304.0, 380.0, -114.0),
         3: (-464.0, 580.0, -174.0),
     },
     "orange": {
