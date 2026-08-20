@@ -235,7 +235,19 @@ _WINDOWS_EXTRA_Y_QUAD = {
     "blue": {
         1: (-144.0, 180.0, -54.0),
         2: (-304.0, 380.0, -114.0),
-        3: (-464.0, 580.0, -174.0),
+        # 3v3 blue is a 4-coefficient CUBIC, not the usual quadratic —
+        # box_probe at s=0.86 confirmed row0 renders 2px too low (target
+        # 501, vs. the quadratic's 503) while row1/row2 (a separate
+        # curve, ROW_HEIGHT_QUAD) were already exact. A quadratic is
+        # only pinned exact at 3 points (0.5/0.75/1.0 here) — 86% falls
+        # between them, so a couple of px of pure interpolation drift
+        # there is expected, not a sign of miscalibration. Upgrading to
+        # a cubic adds 86% as a 4th exactly-pinned point WITHOUT moving
+        # the other three at all (solved via exact rational arithmetic
+        # through all 4 constraints simultaneously) — 50%, 75%, and
+        # 100% are untouched. See _quad()'s docstring for why this
+        # (normally 3-coefficient) tuple has 4 entries here.
+        3: (303.46320346320346, -1146.7922077922078, 1073.1277056277056, -287.7987012987013),
         4: (-256.0, 320.0, -96.0),
     },
     "orange": {
@@ -328,8 +340,16 @@ _GOAL_NAMEPLATE_REFERENCE_SLOT = (
 
 
 def _quad(coefs: tuple, s: float) -> float:
-    c2, c1, c0 = coefs
-    return c2 * s * s + c1 * s + c0
+    """Evaluates a polynomial via Horner's method, given highest-order-
+    first coefficients. Despite the name (kept for the common 3-tuple
+    quadratic case — every UI_QUAD/ROW_HEIGHT_QUAD constant), this also
+    accepts a 4-tuple cubic, used by EXTRA_Y_QUAD entries that need a
+    point pinned at some intermediate UI scale in addition to the usual
+    0.5/0.75/1.0 — see EXTRA_Y_QUAD["blue"][3]'s comment."""
+    result = 0.0
+    for c in coefs:
+        result = result * s + c
+    return result
 
 
 def _round_up(value: float) -> int:
