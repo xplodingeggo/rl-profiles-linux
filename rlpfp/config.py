@@ -2,7 +2,7 @@
 Config discovery/init.
 
 Reuses the exact same file this project already has:
-  ~/.config/rl-pfp-overlay/config.json — steam_api_key, psn_npsso,
+  %APPDATA%\\rl-pfp-overlay\\config.json — steam_api_key, psn_npsso,
   xbox_api_key, bridge_venv_python, avatar_overrides,
   epic_placeholder_disabled
 Env vars STEAM_API_KEY / PSN_NPSSO / XBOX_API_KEY still take priority,
@@ -22,22 +22,16 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from pathlib import Path
 
-# Linux: XDG-style ~/.config and ~/.cache, matching the original tool.
-# Windows: %APPDATA% (Roaming) for config, %LOCALAPPDATA% for cache — the
+# %APPDATA% (Roaming) for config, %LOCALAPPDATA% for cache — the
 # conventional split (config should roam with the user profile, cache
 # shouldn't). Both fall back to Path.home() if the env var is somehow
 # unset (rare, but cheaper than crashing over it).
-if sys.platform == "win32":
-    _APPDATA = Path(os.environ.get("APPDATA") or Path.home())
-    _LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or Path.home())
-    CONFIG_DIR = _APPDATA / "rl-pfp-overlay"
-    CACHE_DIR = _LOCALAPPDATA / "rl-pfp-overlay" / "cache"
-else:
-    CONFIG_DIR = Path.home() / ".config" / "rl-pfp-overlay"
-    CACHE_DIR = Path.home() / ".cache" / "rl-pfp-overlay"
+_APPDATA = Path(os.environ.get("APPDATA") or Path.home())
+_LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+CONFIG_DIR = _APPDATA / "rl-pfp-overlay"
+CACHE_DIR = _LOCALAPPDATA / "rl-pfp-overlay" / "cache"
 
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
@@ -67,18 +61,9 @@ _FIELDS = [
     ),
     (
         "bridge_venv_python", None, "Path to bridge/controller's venv Python",
-        "e.g. /home/you/venvs/rlpfp/bin/python — leave blank to use the same "
-        "interpreter rl-pfp itself is running under (fine if you don't split "
-        "environments). The overlay always uses that same interpreter "
-        "rl-pfp runs under too, since PyGObject/gtk4-layer-shell usually "
-        "needs system Python, not a venv",
-        False,
-    ),
-    (
-        "scoreboard_button", None, "Controller button for scoreboard toggle (Linux)",
-        "e.g. BTN_SELECT (Share/Select) — defaults to BTN_THUMBL (L3) if "
-        "left blank. Run `python3 -m rlpfp.controller_listener --detect` "
-        "and press the button you want to find its exact name first",
+        "e.g. C:\\path\\to\\venv\\Scripts\\python.exe — leave blank to use the "
+        "same interpreter rl-pfp itself is running under (fine if you don't "
+        "split environments)",
         False,
     ),
     (
@@ -260,8 +245,8 @@ def _edit_avatar_overrides_interactive(config: dict) -> None:
 
     print(
         "\nTo find your platform + account ID: run `rl-pfp start`, join a "
-        "match, then check the bridge log (~/.cache/rl-pfp-overlay/logs/"
-        "bridge.log) for a line like:\n"
+        "match, then check the bridge log (%LOCALAPPDATA%\\rl-pfp-overlay\\"
+        "cache\\logs\\bridge.log) for a line like:\n"
         "  PlayerJoined: YourName (Epic|61a21e5cbca9481e8b19b944f792d778|0)\n"
         "That's platform|account_id|splitscreen — you want the first two, "
         "lowercase the platform.\n"

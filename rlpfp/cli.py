@@ -3,7 +3,7 @@ rl-pfp — unified CLI entrypoint.
 
     rl-pfp                    same as `rl-pfp start`
     rl-pfp start [--debug] [--verbose]
-                                    run rl_stats_bridge + gtk4_overlay + controller_listener
+                                    run rl_stats_bridge + win_overlay + win_controller
                                     (foreground). --debug: overlay HUD only. --verbose:
                                     bridge per-request access logs (noisy, off by default —
                                     was previously (and confusingly) tied to --debug, which
@@ -19,9 +19,9 @@ rl-pfp — unified CLI entrypoint.
 Each component also still runs completely standalone, unchanged, for
 isolated debugging:
 
-    python3 -m rlpfp.rl_stats_bridge --verbose
-    python3 -m rlpfp.gtk4_overlay --debug
-    python3 -m rlpfp.controller_listener --list
+    python -m rlpfp.rl_stats_bridge --verbose
+    python -m rlpfp.win_overlay --debug
+    python -m rlpfp.win_controller --list
 """
 
 from __future__ import annotations
@@ -96,14 +96,11 @@ def _cmd_config(_args: argparse.Namespace) -> int:
 
 
 def _cmd_grid(_args: argparse.Namespace) -> int:
-    """Launch the standalone pixel-grid calibration overlay as its own
-    process — grid_measure.py (GTK, with the same LD_PRELOAD auto-
-    detection `start` uses) on Linux, win_grid_measure.py (Tkinter/
-    win32) on Windows. Runs independently, alongside or instead of
-    `rl-pfp start`."""
-    module = "rlpfp.win_grid_measure" if sys.platform == "win32" else "rlpfp.grid_measure"
+    """Launch the standalone pixel-grid calibration overlay (win_grid_measure.py,
+    Tkinter/win32) as its own process. Runs independently, alongside or
+    instead of `rl-pfp start`."""
     env = {**os.environ, **supervisor._overlay_env()}
-    argv = [sys.executable, "-m", module]
+    argv = [sys.executable, "-m", "rlpfp.win_grid_measure"]
     try:
         return subprocess.run(argv, env=env).returncode
     except KeyboardInterrupt:
@@ -111,13 +108,11 @@ def _cmd_grid(_args: argparse.Namespace) -> int:
 
 
 def _cmd_probe(_args: argparse.Namespace) -> int:
-    """Launch the standalone box-position probe overlay as its own
-    process — box_probe.py (GTK) on Linux, win_box_probe.py (Tkinter/
-    win32) on Windows. Runs independently, alongside or instead of
-    `rl-pfp start`."""
-    module = "rlpfp.win_box_probe" if sys.platform == "win32" else "rlpfp.box_probe"
+    """Launch the standalone box-position probe overlay (win_box_probe.py,
+    Tkinter/win32) as its own process. Runs independently, alongside or
+    instead of `rl-pfp start`."""
     env = {**os.environ, **supervisor._overlay_env()}
-    argv = [sys.executable, "-m", module]
+    argv = [sys.executable, "-m", "rlpfp.win_box_probe"]
     try:
         return subprocess.run(argv, env=env).returncode
     except KeyboardInterrupt:

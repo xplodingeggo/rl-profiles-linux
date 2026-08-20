@@ -3,13 +3,13 @@ Supervisor for `rl-pfp start`.
 
 Runs bridge, overlay, and controller as three SEPARATE OS processes
 (not merged into one) so each keeps its own memory space, its own
-crash domain, and can be attached to individually with pdb/gdb/strace
+crash domain, and can be attached to individually with a debugger
 without touching the other two — you can still run any one of them
 completely standalone for debugging:
 
-    python3 -m rlpfp.rl_stats_bridge --verbose
-    python3 -m rlpfp.gtk4_overlay --debug
-    python3 -m rlpfp.controller_listener --list
+    python -m rlpfp.rl_stats_bridge --verbose
+    python -m rlpfp.win_overlay --debug
+    python -m rlpfp.win_controller --list
 
 What this module adds on top of "three terminals":
   - starts bridge first and waits for it to actually be listening on
@@ -17,8 +17,8 @@ What this module adds on top of "three terminals":
     relying on their own retry loops to paper over the startup race
   - interleaves all three processes' stdout/stderr into one prefixed
     stream ([bridge] / [overlay] / [controller]) AND writes each to
-    its own file under ~/.cache/rl-pfp-overlay/logs/, so you can
-    `tail -f` just one component if you're debugging it in isolation
+    its own file under %LOCALAPPDATA%\\rl-pfp-overlay\\cache\\logs\\, so
+    you can watch just one component if you're debugging it in isolation
   - one Ctrl+C (SIGINT) or SIGTERM stops all three in a sane order
     (controller + overlay first, since they're bridge *clients* and
     otherwise log noisy "connection refused" while bridge is still
@@ -40,31 +40,6 @@ from pathlib import Path
 from .config import CACHE_DIR
 
 BRIDGE_URL = "http://127.0.0.1:9090"
-IS_WINDOWS = sys.platform == "win32"
-
-# The overlay needs gtk4-layer-shell preloaded, same requirement your
-# original gtk4_overlay.py always had — LD_PRELOAD is a shell-level env
-# var, not something Python can set for its own already-running process,
-# so this has to be injected before the overlay child even starts, not
-# handled inside overlay.py itself.
-#
-# Common install locations across distros; first match wins. If yours
-# isn't here, either add it, or export LD_PRELOAD yourself before
-# running `rl-pfp start` (that still works — this only fills it in when
-# it's not already set).
-LAYER_SHELL_LIB_CANDIDATES = [
-    "/usr/lib/libgtk4-layer-shell.so",                       # Arch
-    "/usr/lib/x86_64-linux-gnu/libgtk4-layer-shell.so",       # Debian/Ubuntu
-    "/usr/lib64/libgtk4-layer-shell.so",                      # Fedora/RHEL
-    "/usr/local/lib/libgtk4-layer-shell.so",                  # built from source
-]
-
-
-def _find_layer_shell_lib() -> str | None:
-    for candidate in LAYER_SHELL_LIB_CANDIDATES:
-        if Path(candidate).exists():
-            return candidate
-    return None
 
 
 def _overlay_env(ui_scale: float | None = None) -> dict[str, str]:
@@ -79,29 +54,6 @@ def _overlay_env(ui_scale: float | None = None) -> dict[str, str]:
         # without touching the file itself.
         env["RL_UI_SCALE"] = str(ui_scale)
 
-    if IS_WINDOWS:
-        # win_overlay.py is plain Tkinter + win32gui — no LD_PRELOAD/
-        # layer-shell equivalent needed on Windows.
-        return env
-
-    if os.environ.get("LD_PRELOAD"):
-        # Already set (e.g. exported in the shell rl-pfp was launched
-        # from) — respect it as-is, don't override.
-        return env
-
-    lib_path = _find_layer_shell_lib()
-    if lib_path:
-        env["LD_PRELOAD"] = lib_path
-        return env
-
-    print(
-        "[supervisor] Couldn't find libgtk4-layer-shell.so in the usual "
-        "locations, and LD_PRELOAD isn't already set — the overlay will "
-        "likely fail to init layer-shell. Either install gtk4-layer-shell "
-        "for your distro, or run:\n"
-        "  LD_PRELOAD=/path/to/libgtk4-layer-shell.so rl-pfp start",
-        flush=True,
-    )
     return env
 BRIDGE_READY_TIMEOUT_SECONDS = 15
 BRIDGE_READY_POLL_INTERVAL = 0.25
@@ -114,7 +66,7 @@ LOG_DIR = CACHE_DIR / "logs"
 # for any child spawned under a DIFFERENT interpreter than sys.executable
 # (e.g. bridge/controller's venv) so that interpreter can `import rlpfp`
 # without needing `pip install -e .` run a second time inside that venv —
-# it only needs aiohttp/evdev installed, this package is found via path.
+# it only needs aiohttp/hidapi installed, this package is found via path.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Order matters for both startup and shutdown.
@@ -135,7 +87,7 @@ def _foreign_interpreter_env(interpreter: str) -> dict[str, str]:
     interpreter than sys.executable (e.g. bridge_venv_python), so that
     interpreter can `import rlpfp` via path alone — no need to
     `pip install -e .` a second time inside that venv, it only needs
-    its own deps (aiohttp, evdev) installed."""
+    its own deps (aiohttp, hidapi) installed."""
     if interpreter == sys.executable:
         return {}
     existing = os.environ.get("PYTHONPATH", "")
@@ -224,14 +176,12 @@ def run(
     until interrupted. Returns a process exit code.
 
     bridge_python: interpreter to use for bridge + controller (their
-    venv, if you split environments — e.g. aiohttp/evdev in a venv,
+    venv, if you split environments — e.g. aiohttp/hidapi in a venv,
     separate from system Python). Defaults to sys.executable, i.e.
     whatever interpreter rl-pfp itself is running under. The overlay
-    ALWAYS uses sys.executable specifically (not bridge_python), since
-    PyGObject/gtk4-layer-shell typically has to be system Python — so
-    rl-pfp itself should generally be installed/run under system Python
-    too, with bridge_python pointing at a separate venv just for
-    bridge/controller.
+    ALWAYS uses sys.executable specifically (not bridge_python), with
+    bridge_python pointing at a separate venv just for bridge/controller
+    if you want to split environments.
 
     ui_scale: overrides rl_ui_scale/$RL_UI_SCALE for the overlay child
     only, for this run — see `rl-pfp start --ui-scale`.
@@ -242,13 +192,11 @@ def run(
     if verbose:
         bridge_argv.append("--verbose")
 
-    overlay_module = "rlpfp.win_overlay" if IS_WINDOWS else "rlpfp.gtk4_overlay"
-    overlay_argv = [sys.executable, "-m", overlay_module]
+    overlay_argv = [sys.executable, "-m", "rlpfp.win_overlay"]
     if debug:
         overlay_argv.append("--debug")
 
-    controller_module = "rlpfp.win_controller" if IS_WINDOWS else "rlpfp.controller_listener"
-    controller_argv = [bridge_interpreter, "-m", controller_module]
+    controller_argv = [bridge_interpreter, "-m", "rlpfp.win_controller"]
 
     children: dict[str, Child] = {
         "bridge": Child("bridge", bridge_argv, extra_env=_foreign_interpreter_env(bridge_interpreter)),

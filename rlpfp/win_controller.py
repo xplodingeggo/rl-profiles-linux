@@ -2,9 +2,8 @@
 """
 Layer 6 (Windows): Controller input listener (button -> scoreboard visibility)
 
-Windows equivalent of controller_listener.py. evdev/`/dev/input` don't
-exist on Windows, so this reads controller state via three backends,
-tried in order until one finds a device:
+Reads controller state via three backends, tried in order until one
+finds a device:
 
   1. XInput (xinput1_4/1_3/9_1_0.dll, ctypes, no package needed) — real
      Xbox controllers, and Steam Input when its output is set to Xbox
@@ -21,29 +20,26 @@ tried in order until one finds a device:
      for controllers neither of the above ever sees at all (confirmed
      with a real 8BitDo Ultimate 2 Wireless connected via its 2.4GHz
      dongle: empty `--list` for both #1 and #2, but it enumerates fine
-     as a standard HID Gamepad). This is the same level Linux's evdev
-     operates at. HID reports have no standard button layout though —
-     unlike XInput, there's no "byte N bit M is always A" — so finding
-     your button requires an interactive baseline-diff: see
-     hid_detect_button() / `--detect-hid`.
+     as a standard HID Gamepad). This is the lowest level that still
+     works uniformly for any compliant device. HID reports have no
+     standard button layout though — unlike XInput, there's no "byte N
+     bit M is always A" — so finding your button requires an
+     interactive baseline-diff: see hid_detect_button() / `--detect-hid`.
 
-Across all three, Steam Input on Windows only remaps input for the
-specific game process it's actively hooking — unlike Linux, where
-Steam's uinput-based remap exposes a virtual Xbox pad system-wide that
-any evdev reader picks up regardless of what's running. That's why a
-controller working "in XInput mode" (native hardware switch, or Steam
-Input actively hooking THIS process) doesn't mean it'll be visible here
-via #1 when Steam Input isn't hooking rl-pfp itself — hence #2 and #3.
+Across all three, Steam Input only remaps input for the specific game
+process it's actively hooking. That's why a controller working "in
+XInput mode" (native hardware switch, or Steam Input actively hooking
+THIS process) doesn't mean it'll be visible here via #1 when Steam
+Input isn't hooking rl-pfp itself — hence #2 and #3.
 
 Listens for a configurable button and POSTs to the bridge's
-/scoreboard-visible endpoint in real time, same as the Linux listener:
+/scoreboard-visible endpoint in real time:
   - button pressed  -> {"visible": true}
   - button released -> {"visible": false}
 
 Config (via `rl-pfp config`):
   scoreboard_button_windows        XInput button name (e.g. "LEFT_THUMB",
-                                    the default — L3, matching Linux's
-                                    BTN_THUMBL default). Only used when
+                                    the default — L3). Only used when
                                     an XInput device is what's found.
   scoreboard_button_dinput_index   Legacy-joystick button index (an
                                     integer, e.g. 2). Only used when NO
@@ -85,7 +81,7 @@ log = logging.getLogger("win-controller")
 
 BRIDGE_URL = "http://127.0.0.1:9090"
 
-DEFAULT_BUTTON_NAME = "LEFT_THUMB"  # L3 — same default as Linux's BTN_THUMBL
+DEFAULT_BUTTON_NAME = "LEFT_THUMB"  # L3
 
 POLL_INTERVAL_SECONDS = 0.02  # 50Hz — fast enough to feel instant on a button press
 RECONNECT_DELAY_SECONDS = 5
@@ -317,10 +313,10 @@ def _dinput_find_connected() -> int | None:
 # and the legacy DirectInput scan above, yet it enumerates perfectly
 # fine as a standard HID Gamepad (Usage Page 0x01, Usage 0x05). Reading
 # the raw HID input reports directly is the lowest level that still
-# works uniformly for any compliant device — the same level Linux's
-# evdev operates at — but HID reports have no standard button layout
-# (unlike XInput's named bits), so there's no way to know which byte/bit
-# is "your button" without an interactive baseline-diff: see
+# works uniformly for any compliant device, but HID reports have no
+# standard button layout (unlike XInput's named bits), so there's no
+# way to know which byte/bit is "your button" without an interactive
+# baseline-diff: see
 # hid_detect_button() / `--detect-hid`.
 #
 # Requires: pip install hidapi (the "hidapi" PyPI package specifically —
