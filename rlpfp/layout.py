@@ -237,17 +237,18 @@ _WINDOWS_EXTRA_Y_QUAD = {
         2: (-304.0, 380.0, -114.0),
         # 3v3 blue is a 4-coefficient CUBIC, not the usual quadratic —
         # box_probe at s=0.86 confirmed row0 renders 2px too low (target
-        # 501, vs. the quadratic's 503) while row1/row2 (a separate
-        # curve, ROW_HEIGHT_QUAD) were already exact. A quadratic is
-        # only pinned exact at 3 points (0.5/0.75/1.0 here) — 86% falls
-        # between them, so a couple of px of pure interpolation drift
-        # there is expected, not a sign of miscalibration. Upgrading to
-        # a cubic adds 86% as a 4th exactly-pinned point WITHOUT moving
-        # the other three at all (solved via exact rational arithmetic
-        # through all 4 constraints simultaneously) — 50%, 75%, and
-        # 100% are untouched. See _quad()'s docstring for why this
-        # (normally 3-coefficient) tuple has 4 entries here.
-        3: (303.46320346320346, -1146.7922077922078, 1073.1277056277056, -287.7987012987013),
+        # 501, vs. the quadratic's 503), then +1px more to 500 (final)
+        # — while row1/row2 (a separate curve, ROW_HEIGHT_QUAD) were
+        # already exact. A quadratic is only pinned exact at 3 points
+        # (0.5/0.75/1.0 here) — 86% falls between them, so a couple of
+        # px of pure interpolation drift there is expected, not a sign
+        # of miscalibration. Upgrading to a cubic adds 86% as a 4th
+        # exactly-pinned point WITHOUT moving the other three at all
+        # (re-solved via exact rational arithmetic through all 4
+        # constraints simultaneously each time the 86% target changes)
+        # — 50%, 75%, and 100% stay untouched. See _quad()'s docstring
+        # for why this (normally 3-coefficient) tuple has 4 entries.
+        3: (483.83838383838383, -1552.6363636363637, 1366.2373737373737, -355.43939393939394),
         4: (-256.0, 320.0, -96.0),
     },
     "orange": {
