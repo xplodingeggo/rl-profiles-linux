@@ -122,21 +122,23 @@ _WINDOWS_SCOREBOARD_LAYOUTS = {
     # low" note this project's Linux history carries for that case).
     # 1v1 not reported broken, left untouched.
     #
-    # IMPORTANT: every row0 base below EXCEPT 3v3 orange/blue and 1v1
-    # blue (fixed) still has its s=1.0-only pixel correction baked
-    # directly into this reference-scale (0.75) value — the same bug
-    # that broke 3v3 orange / 1v1 blue at 75% scale (see those entries'
-    # comments + EXTRA_Y_QUAD below for the fix and full explanation).
-    # Everything else is only known-correct at s=1.0 right now; treat
-    # it as broken at any other UI scale until it gets the same
-    # two-point (0.75 + 1.0) re-measurement.
+    # IMPORTANT: every row0 base below originally had its s=1.0-only
+    # pixel correction baked directly into this reference-scale (0.75)
+    # value, which breaks 75% scale (first caught on 3v3 orange) — see
+    # each entry's comment + EXTRA_Y_QUAD below for the fix. All 8
+    # (team x team_size) combinations are now confirmed at both s=0.75
+    # and s=1.0.
     # 4v4 orange: blind "+1 row spacing" guess (756->812) needed a
     # further +10/11px, same pattern as 3v3's orange fix — 823 (final
     # y=818). Blue: user confirmed it renders 38-40px too low (~39,
     # landed on the even-number candidate at their request) — moved to
     # 389 (final y=384), then -1px to 388 (final y=383), then -1px more
-    # to 387 (final y=382).
-    4: {"blue": 387, "orange": 823},  # blue was 428, then 389, 388; orange was 756, then 812
+    # to 387 (final y=382). Both s=1.0-only measurements, same fudge bug
+    # as everywhere else — box_probe at s=0.75: blue confirmed 32px too
+    # high (target 387+32=419), orange confirmed 27px too low (target
+    # 823-27=796). Bases reset to those; EXTRA_Y_QUAD below keeps the
+    # previously-confirmed s=1.0 targets (382 blue, 818 orange) exact.
+    4: {"blue": 419, "orange": 796},  # blue was 428/389/388/387(s=1.0-only fudge); orange was 756/812/823(s=1.0-only fudge)
     # 3v3: the blind "+1 row spacing" guess (754->810) landed close but
     # not exact — box_probe measured the real target as y=817 at s=1.0,
     # which needed +12 on top of the row-spacing guess (810->822) IF
@@ -216,28 +218,31 @@ _WINDOWS_ROW_HEIGHT_QUAD = (88.0, -86.0, 72.0)  # c0 net +1 vs. original Linux c
 #
 # Confirmed so far (base @ s=0.75 -> target @ s=1.0, gap = the extra
 # curve's value at s=1.0):
+#   orange 4v4: base 796 -> 818 (27px gap)
 #   orange 3v3: base 792 -> 817 (25px gap)
 #   orange 2v2: base 793 -> 817 (29px gap, after -2px/-1px/-1px fixes)
-#   orange 1v1: base 798 -> 817 (24px gap — all three orange team sizes
-#               converge on ~24-25px regardless of base/team_size;
+#   orange 1v1: base 798 -> 817 (24px gap — all four orange team sizes
+#               converge on ~24-29px regardless of base/team_size;
 #               unconfirmed whether that's meaningful or coincidence,
 #               but each is still fit independently)
+#   blue   4v4: base 419 -> 382 (-32px gap)
 #   blue   3v3: base 528 -> 465 (-58px gap, after two 1px up-left fixes)
 #   blue   2v2: base 591 -> 548 (-38px gap, after two 1px up fixes)
 #   blue   1v1: base 655 -> 632 (-18px gap, after the 1px up-left fix)
-# Everything else still has its s=1.0-only calibration baked directly
-# into SCOREBOARD_LAYOUTS (see that dict's comments) and needs the same
-# two-point re-measurement before it can be trusted off 100% scale.
+# Every team size at both scales is now confirmed — see this dict's
+# comment for the sole remaining exception, if any.
 _WINDOWS_EXTRA_Y_QUAD = {
     "blue": {
         1: (-144.0, 180.0, -54.0),
         2: (-304.0, 380.0, -114.0),
         3: (-464.0, 580.0, -174.0),
+        4: (-256.0, 320.0, -96.0),
     },
     "orange": {
         1: (192.0, -240.0, 72.0),
         2: (232.0, -290.0, 87.0),
         3: (240.0, -300.0, 90.0),
+        4: (216.0, -270.0, 81.0),
     },
 }
 
