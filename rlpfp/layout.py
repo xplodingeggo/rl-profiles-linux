@@ -160,19 +160,25 @@ _WINDOWS_SCOREBOARD_LAYOUTS = {
     # comment), still needs an exact box_probe target before it can be
     # fixed the same way orange was.
     3: {"blue": 470, "orange": 790},  # orange was 490/822(s=1.0-only fudge)/795(6px error)/789(+1px)
-    # 2v2: blue confirmed correct as-is. Orange (blind "+1 row spacing"
-    # guess, never independently measured) confirmed 9px too high on real
-    # hardware -> 812+9=821, then +1px more (822) on final dial-in.
-    2: {"blue": 553, "orange": 822},  # orange was 756, then 812, 821
-    # 1v1: never independently measured until now. Blue confirmed 18px too
-    # high (617+18=635), then +2px more (637) — all at s=1.0, same
-    # s=1.0-only-fudge bug as orange. box_probe at s=0.75: target is
-    # x=716, y=656 — base reset to that (the real 0.75 reference value)
-    # and x/y extras added below (EXTRA_X_NUDGE / EXTRA_Y_QUAD) to still
-    # hit the previously-confirmed s=1.0 target (632) exactly.
-    # Orange confirmed 60px too high (761+60=821), then +1px more (822)
-    # — same s=1.0-only bug, still needs its own s=0.75 re-measurement.
-    1: {"blue": 656, "orange": 822},  # blue was 617/635/637(s=1.0-only fudge); orange was 761, 821
+    # 2v2: blue "confirmed correct as-is" was only ever checked at
+    # s=1.0 (548, base 553 + shared dy(1.0)=-5) — same s=1.0-only
+    # blind spot as everything else here. Confirmed broken at s=0.75:
+    # renders 18px too low, i.e. target is 553-18=535. Base reset to
+    # 535 (the real 0.75 value); EXTRA_Y_QUAD["blue"][2] keeps the
+    # s=1.0 target (548) exact.
+    # Orange (blind "+1 row spacing" guess, never independently
+    # measured at s=1.0 or s=0.75) confirmed 25px too low at s=0.75:
+    # target is 822-25=797. Base reset to 797; EXTRA_Y_QUAD["orange"][2]
+    # keeps the previously-confirmed s=1.0 target (817) exact.
+    2: {"blue": 535, "orange": 797},  # blue was 553(s=1.0-only fudge); orange was 756/812/821/822(s=1.0-only fudge)
+    # 1v1: blue box_probe target at s=0.75 was (716, 656), corrected by
+    # 1px up-left to (715, 655) — base reset to 655, x nudge 2->1 (see
+    # EXTRA_X_NUDGE/EXTRA_Y_QUAD below), s=1.0 target (632) still exact.
+    # Orange confirmed 24px too high at s=0.75 (previous base 822 was
+    # the same s=1.0-only fudge as everywhere else): target is
+    # 822-24=798. Base reset to 798; EXTRA_Y_QUAD["orange"][1] keeps
+    # the previously-confirmed s=1.0 target (817) exact.
+    1: {"blue": 655, "orange": 798},  # blue was 617/635/637/656; orange was 761/821/822(s=1.0-only fudge)
 }
 
 _WINDOWS_SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
@@ -205,30 +211,40 @@ _WINDOWS_ROW_HEIGHT_QUAD = (88.0, -86.0, 74.0)  # c0 +3 total: +1 from original 
 # the s=0.75 target directly now), and s=1.0 (forced to whatever gap
 # the s=1.0 measurement leaves after the shared curve is applied).
 #
-# Confirmed so far:
-#   orange 3v3: box_probe y=790 @ s=0.75, y=817 @ s=1.0 (32px gap)
-#   blue   1v1: box_probe y=656 @ s=0.75, y=632 @ s=1.0 (-19px gap)
+# Confirmed so far (base @ s=0.75 -> target @ s=1.0, gap = the extra
+# curve's value at s=1.0):
+#   orange 3v3: base 790 -> 817 (27px... plus the +1px request -> 32px gap)
+#   orange 2v2: base 797 -> 817 (25px gap)
+#   orange 1v1: base 798 -> 817 (24px gap — huh, all three orange gaps
+#               converge close to the s=1.0 target of ~817 regardless
+#               of base; unconfirmed whether that's meaningful or
+#               coincidence, but each is fit independently regardless)
+#   blue   2v2: base 535 -> 548 (18px gap)
+#   blue   1v1: base 655 -> 632 (-18px gap, after the 1px up-left fix)
 # Everything else still has its s=1.0-only calibration baked directly
 # into SCOREBOARD_LAYOUTS (see that dict's comments) and needs the same
 # two-point re-measurement before it can be trusted off 100% scale.
 _WINDOWS_EXTRA_Y_QUAD = {
     "blue": {
-        1: (-152.0, 190.0, -57.0),
+        1: (-144.0, 180.0, -54.0),
+        2: (144.0, -180.0, 54.0),
     },
     "orange": {
+        1: (192.0, -240.0, 72.0),
+        2: (200.0, -250.0, 75.0),
         3: (256.0, -320.0, 96.0),
     },
 }
 
 # Same idea as EXTRA_Y_QUAD but for x, and flat (not scale-dependent) —
-# only one measurement exists so far (1v1 blue: box_probe x=716 @
-# s=0.75, 2px right of the shared SLOT_X-derived 714), not enough to
+# only one measurement exists so far (1v1 blue: box_probe x=715 @
+# s=0.75, 1px right of the shared SLOT_X-derived 714), not enough to
 # fit a curve, so this applies uniformly at every scale until an s=1.0
 # measurement either confirms that or shows it also needs its own
 # curve like EXTRA_Y_QUAD.
 _WINDOWS_EXTRA_X_NUDGE = {
     "blue": {
-        1: 2,
+        1: 1,
     },
 }
 _WINDOWS_NAMEPLATE_UI_QUAD = {
