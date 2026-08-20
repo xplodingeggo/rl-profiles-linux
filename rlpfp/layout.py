@@ -99,11 +99,12 @@ SCOREBOARD_LAYOUTS = {
     3: {"blue": 470, "orange": 822},  # was 490, then 474, 472, 471, 470
     # 2v2: blue confirmed correct as-is. Orange (blind "+1 row spacing"
     # guess, never independently measured) confirmed 9px too high on real
-    # hardware -> 812+9=821.
-    2: {"blue": 553, "orange": 821},  # orange was 756, then 812
+    # hardware -> 812+9=821, then +1px more (822) on final dial-in.
+    2: {"blue": 553, "orange": 822},  # orange was 756, then 812, 821
     # 1v1: never independently measured until now. Blue confirmed 18px too
-    # high (617+18=635); orange confirmed 60px too high (761+60=821).
-    1: {"blue": 635, "orange": 821},  # blue was 617; orange was 761
+    # high (617+18=635), then +2px more (637). Orange confirmed 60px too
+    # high (761+60=821), then +1px more (822).
+    1: {"blue": 637, "orange": 822},  # blue was 617, 635; orange was 761, 821
 }
 
 SCOREBOARD_UI_QUAD = {  # (c2, c1, c0) per axis, value = c2*s^2 + c1*s + c0
