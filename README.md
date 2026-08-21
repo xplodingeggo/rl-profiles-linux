@@ -142,6 +142,8 @@ A:
 
 **A:** Run `rl-pfp config`, and at the end it'll offer to add a custom avatar override. You need your platform + account ID — join a match first with `rl-pfp start` running, and check `%LOCALAPPDATA%\rl-pfp-overlay\cache\logs\bridge.log` for a line like:
 
+Animated GIFs are supported for overrides — point it at a `.gif` and it'll play, both on the scoreboard and the goal nameplate.
+
 ```
 PlayerJoined: YourName (Epic|61a21e5cbca9481e8b19b944f792d778/0)
 ```
