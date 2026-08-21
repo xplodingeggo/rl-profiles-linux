@@ -49,7 +49,7 @@ import time
 import tkinter as tk
 from pathlib import Path
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageSequence, ImageTk
 
 import win32api
 import win32con
@@ -83,6 +83,10 @@ log = logging.getLogger("win-overlay")
 # rounded-corner regions vanish the same way GTK's alpha compositing did
 # on Linux, just via a color-key instead of true per-pixel alpha.
 TRANSPARENT_KEY = "#ff00fe"
+
+# Some GIFs declare a 0ms (or otherwise absurdly short) frame duration —
+# floor it so an animated avatar can't peg a CPU core redrawing every tick.
+MIN_GIF_FRAME_MS = 20
 
 bridge_state = BridgeState()
 focus_state = FocusState()
@@ -172,8 +176,17 @@ def _virtual_screen_rect() -> tuple[int, int, int, int]:
 class Overlay:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self._texture_cache: dict[str, ImageTk.PhotoImage] = {}
+        # cache_key ("path|WxH") -> list of (PhotoImage, duration_ms) —
+        # a static image is just a 1-frame list, so the rest of the
+        # overlay doesn't need to know or care which it's showing.
+        self._frames_cache: dict[str, list[tuple[ImageTk.PhotoImage, int]]] = {}
         self._avatar_labels: dict[str, tk.Label] = {}
+        # widget_id -> {"key": cache_key, "frame": int, "next_at": float}
+        # — drives per-widget GIF playback independently of each other
+        # (goal nameplate and each scoreboard slot can be on different
+        # frames/GIFs at once) and independently of the 50ms bridge-poll
+        # tick, since GIF frame durations rarely line up with that.
+        self._anim_state: dict[str, dict] = {}
         self._last_logged_positions: dict[str, tuple] = {}
         self._last_logged_team_size = None
 
@@ -214,76 +227,131 @@ class Overlay:
         except Exception:
             log.exception("Could not enable click-through")
 
-    def _load_avatar(self, path: str, w: int, h: int) -> ImageTk.PhotoImage | None:
-        """Load + cache an avatar image, composited onto a TRANSPARENT_KEY
-        background so any alpha/rounded-corner regions in the source PNG
-        vanish through the color-key instead of showing a black/white
-        box. Re-composited per requested size, cached by (path, w, h)."""
+    def _process_frame(self, frame: Image.Image, w: int, h: int) -> Image.Image:
+        """Composite one raw frame onto a TRANSPARENT_KEY background so any
+        alpha/rounded-corner regions vanish through the color-key instead
+        of showing a black/white box. Shared by static images and every
+        frame of an animated GIF."""
+        src = frame.convert("RGBA")
+        inset = AVATAR_INSET_PX
+        inner_w, inner_h = max(1, w - 2 * inset), max(1, h - 2 * inset)
+        # COVER fit: scale to fill, center-crop the overflow — matches
+        # Gtk.ContentFit.COVER used on the Linux side.
+        src_ratio = src.width / src.height
+        dst_ratio = inner_w / inner_h
+        if src_ratio > dst_ratio:
+            scale_h = inner_h
+            scale_w = round(inner_h * src_ratio)
+        else:
+            scale_w = inner_w
+            scale_h = round(inner_w / src_ratio)
+        resized = src.resize((max(1, scale_w), max(1, scale_h)), Image.LANCZOS)
+        left = (resized.width - inner_w) // 2
+        top = (resized.height - inner_h) // 2
+        cropped = resized.crop((left, top, left + inner_w, top + inner_h))
+
+        # -transparentcolor can only key out an EXACT pixel match, not
+        # partial transparency. Some avatars (mostly PSN ones, and GIFs)
+        # have real anti-aliased alpha edges — alpha_composite would blend
+        # those semi-transparent edge pixels with TRANSPARENT_KEY,
+        # producing a pixel that's neither fully opaque nor an exact
+        # key match, which shows up as a pink fringe/outline around
+        # the avatar instead of vanishing. Binarizing the alpha first
+        # guarantees every pixel is either fully avatar or fully key.
+        r, g, b, a = cropped.split()
+        a = a.point(lambda v: 255 if v >= 128 else 0)
+        cropped = Image.merge("RGBA", (r, g, b, a))
+
+        bg = Image.new("RGBA", (inner_w, inner_h), TRANSPARENT_KEY)
+        bg.alpha_composite(cropped)
+        return bg.convert("RGB")
+
+    def _load_avatar_frames(self, path: str, w: int, h: int) -> list[tuple[ImageTk.PhotoImage, int]] | None:
+        """Load + cache an avatar's frames at the given size. A static
+        image (or a GIF with only one frame) comes back as a 1-element
+        list; an animated GIF comes back with one entry per frame, each
+        paired with that frame's display duration in ms. Cached by
+        (path, w, h) — re-composited whenever the requested slot size
+        changes (e.g. UI scale)."""
         cache_key = f"{path}|{w}x{h}"
-        if cache_key in self._texture_cache:
-            return self._texture_cache[cache_key]
+        if cache_key in self._frames_cache:
+            return self._frames_cache[cache_key]
         try:
-            src = Image.open(path).convert("RGBA")
-            inset = AVATAR_INSET_PX
-            inner_w, inner_h = max(1, w - 2 * inset), max(1, h - 2 * inset)
-            # COVER fit: scale to fill, center-crop the overflow — matches
-            # Gtk.ContentFit.COVER used on the Linux side.
-            src_ratio = src.width / src.height
-            dst_ratio = inner_w / inner_h
-            if src_ratio > dst_ratio:
-                scale_h = inner_h
-                scale_w = round(inner_h * src_ratio)
+            src = Image.open(path)
+            frames: list[tuple[ImageTk.PhotoImage, int]] = []
+            if getattr(src, "is_animated", False) and src.n_frames > 1:
+                for frame in ImageSequence.Iterator(src):
+                    duration = max(MIN_GIF_FRAME_MS, frame.info.get("duration", 100))
+                    processed = self._process_frame(frame, w, h)
+                    frames.append((ImageTk.PhotoImage(processed), duration))
             else:
-                scale_w = inner_w
-                scale_h = round(inner_w / src_ratio)
-            resized = src.resize((max(1, scale_w), max(1, scale_h)), Image.LANCZOS)
-            left = (resized.width - inner_w) // 2
-            top = (resized.height - inner_h) // 2
-            cropped = resized.crop((left, top, left + inner_w, top + inner_h))
-
-            # -transparentcolor can only key out an EXACT pixel match, not
-            # partial transparency. Some avatars (mostly PSN ones) have
-            # real anti-aliased alpha edges — alpha_composite would blend
-            # those semi-transparent edge pixels with TRANSPARENT_KEY,
-            # producing a pixel that's neither fully opaque nor an exact
-            # key match, which shows up as a pink fringe/outline around
-            # the avatar instead of vanishing. Binarizing the alpha first
-            # guarantees every pixel is either fully avatar or fully key.
-            r, g, b, a = cropped.split()
-            a = a.point(lambda v: 255 if v >= 128 else 0)
-            cropped = Image.merge("RGBA", (r, g, b, a))
-
-            bg = Image.new("RGBA", (inner_w, inner_h), TRANSPARENT_KEY)
-            bg.alpha_composite(cropped)
-            photo = ImageTk.PhotoImage(bg.convert("RGB"))
-            self._texture_cache[cache_key] = photo
-            return photo
+                processed = self._process_frame(src, w, h)
+                frames.append((ImageTk.PhotoImage(processed), 0))
+            self._frames_cache[cache_key] = frames
+            return frames
         except Exception as e:
             log.warning("Failed to load avatar image %s: %s", path, e)
             return None
 
     def _place_avatar(self, widget_id: str, avatar_path: str, x: int, y: int, w: int, h: int) -> None:
-        photo = self._load_avatar(avatar_path, w, h)
-        if photo is None:
-            self._hide_avatar(widget_id)
-            return
-
-        inset = AVATAR_INSET_PX
-        rel_x = x - self._origin[0] + inset
-        rel_y = y - self._origin[1] + inset
+        cache_key = f"{avatar_path}|{w}x{h}"
 
         label = self._avatar_labels.get(widget_id)
         if label is None:
             label = tk.Label(self.root, bd=0, highlightthickness=0, bg=TRANSPARENT_KEY)
             self._avatar_labels[widget_id] = label
-        label.configure(image=photo)
-        label.image = photo  # keep a reference; Tk drops GC'd PhotoImages
+
+        state = self._anim_state.get(widget_id)
+        if state is None or state["key"] != cache_key:
+            # New image (or first time shown, or slot resized) for this
+            # widget — (re)load its frames and start animation over from
+            # frame 0, rather than mid-cycle, so a re-placed GIF doesn't
+            # jump around.
+            frames = self._load_avatar_frames(avatar_path, w, h)
+            if not frames:
+                self._hide_avatar(widget_id)
+                return
+            photo, duration = frames[0]
+            state = {
+                "key": cache_key,
+                "frame": 0,
+                "next_at": time.time() + duration / 1000.0 if duration else None,
+            }
+            self._anim_state[widget_id] = state
+            label.configure(image=photo)
+            label.image = photo  # keep a reference; Tk drops GC'd PhotoImages
+
+        inset = AVATAR_INSET_PX
+        rel_x = x - self._origin[0] + inset
+        rel_y = y - self._origin[1] + inset
         label.place(x=rel_x, y=rel_y, width=w - 2 * inset, height=h - 2 * inset)
 
     def _hide_avatar(self, widget_id: str) -> None:
         label = self._avatar_labels.get(widget_id)
         if label is not None:
             label.place_forget()
+        self._anim_state.pop(widget_id, None)
+
+    def _advance_animations(self) -> None:
+        """Step every currently-placed GIF avatar forward to whichever
+        frame its duration says should be showing now. Runs every tick
+        (50ms) independently of the bridge-poll data, since GIF frame
+        durations rarely divide evenly into that."""
+        now = time.time()
+        for widget_id, state in self._anim_state.items():
+            if state["next_at"] is None or now < state["next_at"]:
+                continue  # static image (duration 0), or not due yet
+            frames = self._frames_cache.get(state["key"])
+            if not frames or len(frames) <= 1:
+                continue
+            label = self._avatar_labels.get(widget_id)
+            if label is None or not label.winfo_ismapped():
+                continue
+            state["frame"] = (state["frame"] + 1) % len(frames)
+            photo, duration = frames[state["frame"]]
+            label.configure(image=photo)
+            label.image = photo
+            state["next_at"] = now + duration / 1000.0
 
     def _tick(self) -> None:
         state = bridge_state.get()
@@ -317,10 +385,6 @@ class Overlay:
             return
 
         if scoreboard_visible:
-            for team_name in ("blue", "orange"):
-                for row_idx in range(4):
-                    self._hide_avatar(f"scoreboard_{team_name}_{row_idx}")
-
             blue = sorted(
                 [p for p in players if p.get("team_num") == 0],
                 key=lambda p: p.get("score", 0), reverse=True,
@@ -340,6 +404,14 @@ class Overlay:
                 )
                 self._last_logged_team_size = team_size
 
+            # Only widget_ids actually re-placed below stay in
+            # _anim_state — anything not in this set (player left,
+            # team shrank, no avatar this tick) gets hidden after, which
+            # is also what resets its animation to frame 0 next time it
+            # reappears. Everything still occupied is left alone here so
+            # _place_avatar's same-key fast path can keep its GIF timer
+            # running instead of restarting it 20x/sec.
+            occupied_ids = set()
             for team_name, team_players in (("blue", blue), ("orange", orange)):
                 for slot in slots:
                     slot_team, row_idx, x, y, w, h = slot
@@ -350,6 +422,7 @@ class Overlay:
                         p = team_players[row_idx]
                         avatar_path = p.get("avatar_path")
                         if avatar_path:
+                            occupied_ids.add(widget_id)
                             prev = self._last_logged_positions.get(widget_id)
                             if prev != (p.get("name"), x, y):
                                 log.info(
@@ -358,6 +431,12 @@ class Overlay:
                                 )
                                 self._last_logged_positions[widget_id] = (p.get("name"), x, y)
                             self._place_avatar(widget_id, avatar_path, x, y, w, h)
+
+            for team_name in ("blue", "orange"):
+                for row_idx in range(4):
+                    widget_id = f"scoreboard_{team_name}_{row_idx}"
+                    if widget_id not in occupied_ids:
+                        self._hide_avatar(widget_id)
         else:
             for team_name in ("blue", "orange"):
                 for row_idx in range(4):
@@ -387,6 +466,7 @@ class Overlay:
         else:
             self._hide_avatar("goal_nameplate")
 
+        self._advance_animations()
         self.root.after(50, self._tick)
 
 

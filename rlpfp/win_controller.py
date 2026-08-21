@@ -729,7 +729,9 @@ def post_scoreboard_visible(visible: bool) -> None:
         with urllib.request.urlopen(req, timeout=2) as resp:
             resp.read()
         log.info("scoreboard_visible -> %s", visible)
-    except (urllib.error.URLError, TimeoutError, ConnectionRefusedError) as e:
+    except (urllib.error.URLError, OSError) as e:
+        # OSError also covers http.client.RemoteDisconnected — see the
+        # comment on the equivalent catch in layout.py's poll_bridge_loop.
         log.warning("Couldn't reach bridge: %s", e)
 
 

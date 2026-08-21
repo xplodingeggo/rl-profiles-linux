@@ -109,10 +109,11 @@ XBOX_PROFILE_URL = "https://api.xbl.io/v2/player/gamertag/{gamertag}"
 #
 # Configured via config.json's "avatar_overrides" dict, not here —
 # see `rl-pfp config`. Key format: "{platform}|{platform_id}" (platform
-# lowercase). Value: absolute path to a local image file (PNG
-# recommended — GTK4's Gtk.Picture doesn't animate GIFs, so an animated
-# GIF here will only ever show its first frame unless the overlay adds
-# manual frame cycling).
+# lowercase). Value: absolute path to a local image file. Animated GIFs
+# are supported on the Windows overlay (win_overlay.py cycles frames
+# per their declared durations) — the Linux/GTK4 overlay still only
+# ever shows a GIF's first frame, since GTK4's Gtk.Picture doesn't
+# animate.
 
 
 def _load_config() -> dict:

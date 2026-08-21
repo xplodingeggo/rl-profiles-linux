@@ -494,7 +494,19 @@ def poll_bridge_loop(bridge_state: "BridgeState") -> None:
             with urllib.request.urlopen(f"{BRIDGE_URL}/current-lobby", timeout=2) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 bridge_state.update(data)
-        except (urllib.error.URLError, TimeoutError, ConnectionRefusedError) as e:
+        except (urllib.error.URLError, OSError) as e:
+            # OSError covers ConnectionRefusedError/TimeoutError (both
+            # already OSError subclasses) plus, crucially,
+            # http.client.RemoteDisconnected (a ConnectionResetError) —
+            # urllib's do_open() only wraps errors from h.request() in
+            # URLError, NOT errors from h.getresponse() (see its source:
+            # the OSError->URLError except only guards the request()
+            # call), so a RemoteDisconnected raised while reading the
+            # response — e.g. the bridge briefly hiccups mid-response
+            # right as a goal/scoreboard render kicks off — was falling
+            # through to the bare `except Exception` below and spamming
+            # a full traceback on every single 50ms poll instead of one
+            # quiet warning line.
             log.warning("Bridge unreachable: %s", e)
         except Exception:
             log.exception("Error polling bridge")
