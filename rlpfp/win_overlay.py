@@ -241,6 +241,18 @@ class Overlay:
             top = (resized.height - inner_h) // 2
             cropped = resized.crop((left, top, left + inner_w, top + inner_h))
 
+            # -transparentcolor can only key out an EXACT pixel match, not
+            # partial transparency. Some avatars (mostly PSN ones) have
+            # real anti-aliased alpha edges — alpha_composite would blend
+            # those semi-transparent edge pixels with TRANSPARENT_KEY,
+            # producing a pixel that's neither fully opaque nor an exact
+            # key match, which shows up as a pink fringe/outline around
+            # the avatar instead of vanishing. Binarizing the alpha first
+            # guarantees every pixel is either fully avatar or fully key.
+            r, g, b, a = cropped.split()
+            a = a.point(lambda v: 255 if v >= 128 else 0)
+            cropped = Image.merge("RGBA", (r, g, b, a))
+
             bg = Image.new("RGBA", (inner_w, inner_h), TRANSPARENT_KEY)
             bg.alpha_composite(cropped)
             photo = ImageTk.PhotoImage(bg.convert("RGB"))
