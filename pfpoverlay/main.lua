@@ -53,10 +53,67 @@ local PLUGIN_DIR = hebnix.plugin_dir()
 local function steam_api_key() return hebnix.get_string("steam_api_key", "") end
 local function xbox_api_key() return hebnix.get_string("xbox_api_key", "") end
 
+-- Avatar overrides now live in a real standalone JSON file next to
+-- main.lua (not buried in a string field inside plugins/config/<slug>/
+-- settings.toml) so "open the overrides file" has an actual honest
+-- file to open, and so it's directly editable in any text editor.
+local OVERRIDES_PATH = PLUGIN_DIR .. "/overrides.json"
+
+local function read_overrides_file()
+    local f = io.open(OVERRIDES_PATH, "r")
+    if not f then return nil end
+    local content = f:read("*a")
+    f:close()
+    local ok, decoded = pcall(hebnix.json_decode, content)
+    if ok and type(decoded) == "table" then return decoded end
+    return nil
+end
+
+-- Hand-rolled pretty printer (one "key": "value" per line, keys sorted)
+-- instead of hebnix.json_encode's compact single-line output — the whole
+-- point of this being a real file is that it's pleasant to open and
+-- hand-edit, and hebnix.json_encode is still used per-field to get
+-- correct JSON string escaping for keys/values.
+local function write_overrides_file(tbl)
+    local keys = {}
+    for k in pairs(tbl) do table.insert(keys, k) end
+    table.sort(keys)
+    local lines = {}
+    for i, k in ipairs(keys) do
+        local ok_k, jk = pcall(hebnix.json_encode, k)
+        local ok_v, jv = pcall(hebnix.json_encode, tbl[k])
+        if ok_k and ok_v then
+            lines[#lines + 1] = "  " .. jk .. ": " .. jv .. (i < #keys and "," or "")
+        end
+    end
+    local f = io.open(OVERRIDES_PATH, "w")
+    if not f then
+        hebnix.log("PfpOverlay: FAILED to open " .. OVERRIDES_PATH .. " for writing")
+        return false
+    end
+    if #lines == 0 then
+        f:write("{}\n")
+    else
+        f:write("{\n" .. table.concat(lines, "\n") .. "\n}\n")
+    end
+    f:close()
+    return true
+end
+
 local function load_overrides()
+    local from_file = read_overrides_file()
+    if from_file then return from_file end
+    -- One-time migration: earlier versions of this plugin stored
+    -- overrides as a JSON string in the settings.toml store instead of
+    -- a real file. Fall back to that the first time overrides.json
+    -- doesn't exist yet, and write it out as a real file from then on.
     local raw = hebnix.get_string("avatar_overrides_json", "{}")
     local ok, decoded = pcall(hebnix.json_decode, raw)
-    if ok and type(decoded) == "table" then return decoded end
+    if ok and type(decoded) == "table" and next(decoded) ~= nil then
+        write_overrides_file(decoded)
+        hebnix.log("PfpOverlay: migrated avatar_overrides_json setting -> " .. OVERRIDES_PATH)
+        return decoded
+    end
     return {}
 end
 
@@ -192,6 +249,26 @@ local function get_scoreboard_slots(team_size, screen_w, screen_h)
     return slots
 end
 
+-- Goal-scored nameplate slot — the "SCORED BY" nameplate RL shows during
+-- a goal replay. Ported from layout.py's GOAL_NAMEPLATE_* constants
+-- (Windows calibration only, same as the scoreboard section above).
+local GOAL_NAMEPLATE_DELAY_SECONDS = 3.5 -- confirmed via real testing to match RL's replay timing
+local GOAL_NAMEPLATE_DURATION_SECONDS = 11 -- how long to show it after GoalScored, once the delay has elapsed
+local GOAL_NAMEPLATE_REFERENCE_SLOT = { 1047, 1223, 75, 75 } -- x, y, w, h at REFERENCE_RESOLUTION/REFERENCE_UI_SCALE (1044+3 x-nudge, 1220+3 y-nudge baked in)
+local NAMEPLATE_EXTRA_Y_QUAD = { -306.0, 382.5, -114.75 }
+local NAMEPLATE_UI_QUAD = {
+    x = { 0.0, -312.0, 234.0 },
+    y = { 304.0, -671.0, 1516.0 },
+    size = { 0.0, 100.0, 0.0 },
+}
+
+local function get_goal_nameplate_slot(screen_w, screen_h)
+    local x, y, w, h = GOAL_NAMEPLATE_REFERENCE_SLOT[1], GOAL_NAMEPLATE_REFERENCE_SLOT[2],
+        GOAL_NAMEPLATE_REFERENCE_SLOT[3], GOAL_NAMEPLATE_REFERENCE_SLOT[4]
+    y = y + quad(NAMEPLATE_EXTRA_Y_QUAD, ui_scale())
+    return scale_slot(x, y, w, h, NAMEPLATE_UI_QUAD, screen_w, screen_h)
+end
+
 -- ==========================================
 -- Player tracking
 -- ==========================================
@@ -215,6 +292,18 @@ local players = {}
 local player_order = {}
 local seen = {}
 local pending_requests = {} -- http url -> pid, to correlate on_http_response
+
+-- Goal-scored nameplate state — ported from rl_stats_bridge.py's
+-- LastGoal + is_replay. is_replay tracks Game.bReplay straight from
+-- UpdateState (see plugin.on_game_event below): it flips true the
+-- instant RL enters the goal replay camera and flips back to false the
+-- instant it ends — WHETHER that's the replay running its natural
+-- course OR every player skipping it early. That's exactly what makes
+-- checking is_replay a skip-detector for free: there's no separate
+-- "was it skipped" event to listen for, we just stop trusting the
+-- delay/duration timer the moment is_replay goes false.
+local last_goal = nil -- { scorer_name, scorer_key, timestamp } or nil
+local is_replay = false
 
 -- Confirmed via real gameplay logging: Hebnix player ids look like
 -- "Epic|61a21e5cbca9481e8b19b944f792d778|0" — platform, then id, then a
@@ -412,6 +501,8 @@ local function clear_players()
     seen = {}
     pending_requests = {}
     download_requests = {}
+    last_goal = nil
+    is_replay = false
 end
 
 local function track_player(pid, name)
@@ -469,6 +560,35 @@ function plugin.on_game_event(event_type, event)
                 update_player_state(pid, name, p.TeamNum, p.Score)
             end
         end
+        -- Same signal rl_stats_bridge.py uses: Game.bReplay flips false
+        -- the instant the goal replay ends, by timeout OR by everyone
+        -- skipping it — no separate "skipped" event exists to listen for.
+        local game = event.data.Game
+        if game and game.bReplay ~= nil then
+            is_replay = game.bReplay
+        end
+    elseif event_type == "GoalScored" then
+        -- Scorer only carries a display Name (no PrimaryId) — match it
+        -- to a tracked player by name, same limitation the Python
+        -- resolver had (GoalScored's own comment: "Shortcut numbers
+        -- aren't in our roster keys, so name match is the best we've
+        -- got from this event alone").
+        local scorer_name = event.data.Scorer and event.data.Scorer.Name or ""
+        local scorer_key = nil
+        for _, key in ipairs(player_order) do
+            if players[key].name == scorer_name then
+                scorer_key = key
+                break
+            end
+        end
+        -- os.time() (whole seconds) instead of a sub-second clock —
+        -- Hebnix's Lua API exposes no monotonic/wall-clock timer, and
+        -- os.clock() measures CPU time (not real elapsed time), which
+        -- would drift against GOAL_NAMEPLATE_DELAY/DURATION_SECONDS
+        -- during idle ticks. ~1s granularity is negligible against an
+        -- 11s display window.
+        last_goal = { scorer_name = scorer_name, scorer_key = scorer_key, timestamp = os.time() }
+        hebnix.log("PfpOverlay: GoalScored by " .. scorer_name .. " (matched key: " .. tostring(scorer_key) .. ")")
     elseif event_type == "GameLeft" or event_type == "MatchEnded" then
         clear_players()
     end
@@ -573,7 +693,10 @@ local function draw_debug_stack(draw)
     if not overlay_visible then return end
     if #player_order == 0 then return end
     local y = AVATAR_START_Y
-    draw.text(AVATAR_START_X, AVATAR_START_Y - 20, "PfpOverlay debug stack",
+    local goal_age = last_goal and (tostring(os.time() - last_goal.timestamp) .. "s ago (" ..
+        last_goal.scorer_name .. ")") or "none"
+    draw.text(AVATAR_START_X, AVATAR_START_Y - 36,
+        "PfpOverlay debug stack  —  is_replay=" .. tostring(is_replay) .. "  last_goal=" .. goal_age,
         { color = "#00ff00ff", size = 16 })
     for _, pid in ipairs(player_order) do
         local p = players[pid]
@@ -619,6 +742,31 @@ local function draw_scoreboard_avatars(draw, w, h)
     end
 end
 
+-- Goal-scored nameplate — shown at the "SCORED BY" nameplate position
+-- during the goal replay. Ported from win_overlay.py's _tick(): only
+-- rendered once GOAL_NAMEPLATE_DELAY_SECONDS has elapsed since the
+-- goal (matches when RL's own nameplate animates in) AND is_replay is
+-- still true. That second condition is the skip detector — if every
+-- player skips the replay early, Game.bReplay flips false immediately
+-- (see plugin.on_game_event's UpdateState handling) and this stops
+-- drawing right away instead of sitting on screen for the rest of the
+-- configured duration over normal gameplay.
+local function draw_goal_nameplate(draw, w, h)
+    if not last_goal then return end
+    local elapsed = os.time() - last_goal.timestamp
+    local in_delay_window = elapsed >= GOAL_NAMEPLATE_DELAY_SECONDS
+        and elapsed < (GOAL_NAMEPLATE_DELAY_SECONDS + GOAL_NAMEPLATE_DURATION_SECONDS)
+    if not (in_delay_window and is_replay) then return end
+
+    local p = last_goal.scorer_key and players[last_goal.scorer_key]
+    if not p or not p.avatar_path then return end
+
+    local x, y, w2, h2 = get_goal_nameplate_slot(w, h)
+    pcall(function()
+        draw.image(p.avatar_path, x, y, w2, h2)
+    end)
+end
+
 function plugin.on_overlay(draw, w, h)
     if not logged_overlay_call then
         logged_overlay_call = true
@@ -627,6 +775,7 @@ function plugin.on_overlay(draw, w, h)
     end
     draw_debug_stack(draw)
     draw_scoreboard_avatars(draw, w, h)
+    draw_goal_nameplate(draw, w, h)
 end
 
 -- ==========================================
@@ -717,10 +866,63 @@ function plugin.on_settings(ui)
     end
 
     ui.space(8)
-    ui.heading("Avatar Overrides (local files — use these to test rendering)")
-    ui.label("JSON object: \"platform|id\" -> absolute image path.")
-    ui.label("Example: {\"steam|76561198210031575\": \"C:/Users/you/Pictures/me.png\"}")
-    ui.text_input("avatar_overrides_json", "Overrides JSON", "{}")
+    ui.heading("Avatar Overrides")
+    ui.label("Force a specific local image for one player, by platform + ID —")
+    ui.label("useful for platforms Hebnix can't resolve automatically (PSN,")
+    ui.label("Epic, Switch), or to override someone's real avatar entirely.")
+    ui.label("The image must already exist under this plugin's own assets/")
+    ui.label("folder (draw.image can't load paths outside it) — drop your")
+    ui.label("image there first, then reference it below as assets/name.png.")
+
+    ui.space(4)
+    local override_platform = ui.combo_box("override_add_platform", "Platform",
+        { "steam", "xboxone", "epic", "psn", "switch" })
+    local override_id = ui.text_input("override_add_id", "Player ID (SteamID64 / gamertag / etc)")
+    local override_path = ui.text_input("override_add_path", "Image path, e.g. assets/me.png")
+
+    if ui.button("Add / Update override") then
+        local id = override_id:match("^%s*(.-)%s*$")
+        local path = override_path:match("^%s*(.-)%s*$")
+        if id == "" or path == "" then
+            hebnix.log("PfpOverlay: override add ignored — both ID and image path are required")
+        else
+            local key = override_platform .. "|" .. id
+            local overrides = load_overrides()
+            overrides[key] = path
+            write_overrides_file(overrides)
+            hebnix.log("PfpOverlay: override set " .. key .. " -> " .. path)
+        end
+    end
+
+    ui.space(6)
+    local current_overrides = load_overrides()
+    local override_keys = {}
+    for k in pairs(current_overrides) do table.insert(override_keys, k) end
+    table.sort(override_keys)
+    if #override_keys == 0 then
+        ui.label("No overrides yet.")
+    else
+        for _, k in ipairs(override_keys) do
+            ui.horizontal(function()
+                ui.label(k .. "  ->  " .. current_overrides[k])
+                -- egui auto-disambiguates same-label widgets by call
+                -- order within a frame (no ImGui-style "##id" needed —
+                -- that syntax isn't special here and would show up as
+                -- literal text in the button).
+                if ui.button("Remove") then
+                    current_overrides[k] = nil
+                    write_overrides_file(current_overrides)
+                end
+            end)
+        end
+    end
+
+    ui.space(6)
+    if ui.button("Open overrides.json") then
+        if not read_overrides_file() then write_overrides_file(load_overrides()) end
+        hebnix.open_url(OVERRIDES_PATH)
+    end
+    ui.label(OVERRIDES_PATH)
 
     ui.space(8)
     ui.heading("Overlay Toggle Bind")
