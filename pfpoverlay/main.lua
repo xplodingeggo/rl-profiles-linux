@@ -1,6 +1,6 @@
--- PfpOverlay: shows Steam/Xbox (PSN pending) profile info for everyone
--- in your match. Lua port of the rl-pfp-overlay Python/Windows
--- project's resolver, scaffolded against Hebnix's plugin API.
+-- PfpOverlay: shows Steam/Xbox/PSN profile info for everyone in your
+-- match. Lua port of the rl-pfp-overlay Python/Windows project's
+-- resolver, scaffolded against Hebnix's plugin API.
 --
 -- STATUS: Full pipeline wired up — Steam/Xbox metadata lookup, avatar
 -- image download, and rendering. Metadata (JSON) fetches use
@@ -31,8 +31,11 @@
 -- correctly. A separate top-left debug stack (draw_debug_stack) still
 -- exists behind overlay_toggle_bind for troubleshooting the resolver
 -- pipeline independent of position calibration.
--- PSN is skipped entirely pending an answer on reading redirect
--- Location headers for its OAuth flow.
+-- PSN now works too, via NPSSO-based OAuth (see the PSN auth section
+-- below) — requires hebnix.http_get_no_redirect_async, a small patch
+-- for reading a redirect's Location header without following it (see
+-- http_client_no_redirect/send_req_location/PluginHttpRedirectRes in
+-- lua_api.rs, plus on_http_redirect_response in manager.rs/app.rs).
 
 local plugin = {}
 
@@ -331,6 +334,279 @@ local function player_key(pid, name)
     return pid
 end
 
+-- ==========================================
+-- PSN auth — ported from the Python rl-pfp-overlay project's
+-- pfp_resolver.py PSN OAuth section. Unlike Steam (an app API key) or
+-- Xbox (a static xbl.io key), PSN requires authenticating AS your own
+-- PSN account: exchange a one-time NPSSO cookie for an access/refresh
+-- token pair, then keep that token fresh automatically. Client
+-- id/secret/redirect_uri/scope below are the same public constants
+-- every reverse-engineered PSN tool (psnawp, PlayStation-Trophies,
+-- etc.) uses to identify itself as a PlayStation client — they are not
+-- secret, and are not this account's credentials.
+--
+-- The one piece this needed that Hebnix's plugin API didn't previously
+-- have: exchanging the NPSSO for an auth code is a GET that
+-- 302-redirects with the code IN the Location header, which you must
+-- NOT follow (following it just loads a dead custom-scheme URL) —
+-- hebnix.http_get_async always follows redirects via its shared
+-- client's default policy, silently discarding that header. Requires a
+-- Hebnix build with hebnix.http_get_no_redirect_async (a small patch,
+-- see http_client_no_redirect/send_req_location in lua_api.rs) +
+-- plugin.on_http_redirect_response below — plain http_get_async cannot
+-- do this exchange at all.
+-- ==========================================
+
+local PSN_OAUTH_CLIENT_ID = "09515159-7237-4370-9b40-3806e67c0891"
+local PSN_OAUTH_CLIENT_SECRET = "ucPjka5tntB2KqsP"
+local PSN_OAUTH_REDIRECT_URI = "com.scee.psxandroid.scecompcall://redirect"
+local PSN_OAUTH_SCOPE = "psn:mobile.v2.core psn:clientapp"
+local PSN_OAUTH_AUTHORIZE_URL = "https://ca.account.sony.com/api/authz/v3/oauth/authorize"
+local PSN_OAUTH_TOKEN_URL = "https://ca.account.sony.com/api/authz/v3/oauth/token"
+-- Legacy PSN profile endpoint — returns avatarUrls among other fields.
+local PSN_PROFILE_URL_FMT = "https://us-prof.np.community.playstation.net/userProfile/v1/users/%s/profile2"
+local PSN_TOKEN_EXPIRY_MARGIN_SECONDS = 60
+
+-- PSN tokens live in their own real file (same reasoning as
+-- overrides.json) rather than settings.toml — they're rewritten
+-- automatically every refresh, which would otherwise mean silently
+-- churning the plugin's whole settings file.
+local PSN_TOKEN_PATH = PLUGIN_DIR .. "/psn_tokens.json"
+
+local function psn_npsso() return hebnix.get_string("psn_npsso", "") end
+
+local function load_psn_tokens()
+    local f = io.open(PSN_TOKEN_PATH, "r")
+    if not f then return {} end
+    local content = f:read("*a")
+    f:close()
+    local ok, decoded = pcall(hebnix.json_decode, content)
+    if ok and type(decoded) == "table" then return decoded end
+    return {}
+end
+
+local function save_psn_tokens(tokens)
+    local ok, encoded = pcall(hebnix.json_encode, tokens)
+    if not ok then return end
+    local f = io.open(PSN_TOKEN_PATH, "w")
+    if not f then return end
+    f:write(encoded)
+    f:close()
+end
+
+local function psn_have_valid_access_token()
+    local tokens = load_psn_tokens()
+    return tokens.access_token ~= nil and tokens.access_token_expires_at ~= nil
+        and tokens.access_token_expires_at > (os.time() + PSN_TOKEN_EXPIRY_MARGIN_SECONDS)
+end
+
+-- Minimal percent-encoding — Hebnix exposes no url_encode, and this is
+-- the only place one's needed (OAuth query/form values: the redirect
+-- URI, scope string, auth code, refresh token).
+local function url_encode(s)
+    return (tostring(s):gsub("[^%w%-%.%_%~]", function(c)
+        return string.format("%%%02X", string.byte(c))
+    end))
+end
+
+local function psn_form_encode(form)
+    local parts = {}
+    for k, v in pairs(form) do
+        table.insert(parts, url_encode(k) .. "=" .. url_encode(v))
+    end
+    return table.concat(parts, "&")
+end
+
+local function psn_basic_auth_header()
+    return "Basic " .. hebnix.base64_encode(PSN_OAUTH_CLIENT_ID .. ":" .. PSN_OAUTH_CLIENT_SECRET)
+end
+
+-- Single-flight guard + waiter queue — same purpose as the Python
+-- resolver's asyncio.Lock: N players resolving PSN avatars at once
+-- must not kick off N concurrent refresh/bootstrap requests against
+-- the same shared account token. Whoever asks first starts the flow;
+-- everyone else queues behind it and gets served once it lands.
+local psn_token_waiters = {}
+local psn_token_flow_active = false
+
+-- Forward-declared: fetch_psn_profile needs pending_requests (below)
+-- and is itself needed by ensure_psn_token_then_fetch, which is
+-- defined before resolve_avatar/pending_requests' full context reads
+-- naturally — see the assignment further down.
+local fetch_psn_profile
+
+local function drain_psn_waiters()
+    local waiters = psn_token_waiters
+    psn_token_waiters = {}
+    for _, pid in ipairs(waiters) do
+        fetch_psn_profile(pid)
+    end
+end
+
+local function psn_token_flow_failed(reason)
+    psn_token_flow_active = false
+    local waiters = psn_token_waiters
+    psn_token_waiters = {}
+    for _, pid in ipairs(waiters) do
+        local p = players[pid]
+        if p then p.status = "psn auth failed: " .. reason end
+    end
+    hebnix.log("PfpOverlay: PSN auth flow failed: " .. reason)
+end
+
+local function psn_start_refresh(refresh_token)
+    local body = psn_form_encode({
+        grant_type = "refresh_token",
+        refresh_token = refresh_token,
+        scope = PSN_OAUTH_SCOPE,
+    })
+    hebnix.http_post_async("psn_token_refresh", PSN_OAUTH_TOKEN_URL, body, {
+        ["Authorization"] = psn_basic_auth_header(),
+        ["Content-Type"] = "application/x-www-form-urlencoded",
+    })
+end
+
+local function psn_start_bootstrap(npsso)
+    local query = "access_type=offline&client_id=" .. url_encode(PSN_OAUTH_CLIENT_ID) ..
+        "&response_type=code&scope=" .. url_encode(PSN_OAUTH_SCOPE) ..
+        "&redirect_uri=" .. url_encode(PSN_OAUTH_REDIRECT_URI)
+    local url = PSN_OAUTH_AUTHORIZE_URL .. "?" .. query
+    -- The NPSSO is sent as a cookie, exactly like a real browser session
+    -- that's already logged into playstation.com would send it.
+    hebnix.http_get_no_redirect_async("psn_authorize", url, { ["Cookie"] = "npsso=" .. npsso })
+end
+
+-- Entry point: call this instead of fetch_psn_profile directly whenever
+-- PSN needs resolving. Proceeds immediately if a cached token is still
+-- valid; otherwise queues the pid and (if no flow is already running)
+-- starts a refresh, falling back to a full NPSSO bootstrap.
+local function ensure_psn_token_then_fetch(pid)
+    if psn_have_valid_access_token() then
+        fetch_psn_profile(pid)
+        return
+    end
+
+    table.insert(psn_token_waiters, pid)
+    local p = players[pid]
+    if p then p.status = "psn: authenticating..." end
+
+    if psn_token_flow_active then return end -- already in flight, just wait
+    psn_token_flow_active = true
+
+    local tokens = load_psn_tokens()
+    local refresh_token = tokens.refresh_token
+    local refresh_expires_at = tokens.refresh_token_expires_at
+    local refresh_still_valid = refresh_token ~= nil and (
+        refresh_expires_at == nil -- unknown expiry — try anyway
+        or refresh_expires_at > (os.time() + PSN_TOKEN_EXPIRY_MARGIN_SECONDS)
+    )
+    if refresh_still_valid then
+        psn_start_refresh(refresh_token)
+    elseif psn_npsso() ~= "" then
+        psn_start_bootstrap(psn_npsso())
+    else
+        psn_token_flow_failed("no psn_npsso set (Settings > PSN)")
+    end
+end
+
+-- Handles BOTH psn_token_refresh and psn_token_bootstrap responses —
+-- same endpoint, different grant_type, same response shape.
+local function handle_psn_token_response(status, body, is_bootstrap)
+    if status ~= 200 then
+        hebnix.log("PfpOverlay: PSN token request failed, status=" .. tostring(status) ..
+            " body=" .. tostring(body):sub(1, 300))
+        if is_bootstrap then
+            psn_token_flow_failed("token exchange failed (HTTP " .. tostring(status) .. ")")
+        else
+            -- Refresh rejected — fall back to a full NPSSO bootstrap
+            -- before giving up, same as the Python resolver.
+            if psn_npsso() ~= "" then
+                hebnix.log("PfpOverlay: PSN refresh_token rejected, falling back to NPSSO bootstrap")
+                psn_start_bootstrap(psn_npsso())
+            else
+                psn_token_flow_failed("refresh rejected and no psn_npsso set")
+            end
+        end
+        return
+    end
+
+    local ok, data = pcall(hebnix.json_decode, body)
+    if not ok or type(data) ~= "table" or not data.access_token then
+        psn_token_flow_failed("bad token response")
+        return
+    end
+
+    local now = os.time()
+    local old_tokens = load_psn_tokens()
+    local tokens = {
+        access_token = data.access_token,
+        access_token_expires_at = now + (tonumber(data.expires_in) or 3600),
+        refresh_token = data.refresh_token or old_tokens.refresh_token,
+        -- PSN typically omits refresh_token_expires_in on a plain
+        -- refresh (only present on the initial NPSSO bootstrap) — if
+        -- absent, keep whatever expiry we already had cached rather
+        -- than nuking a still-valid one.
+        refresh_token_expires_at = data.refresh_token_expires_in
+            and (now + tonumber(data.refresh_token_expires_in))
+            or old_tokens.refresh_token_expires_at,
+    }
+    save_psn_tokens(tokens)
+    psn_token_flow_active = false
+    hebnix.log("PfpOverlay: PSN access token " ..
+        (is_bootstrap and "authenticated fresh via NPSSO" or "refreshed"))
+    drain_psn_waiters()
+end
+
+-- Step 1 -> 2 handoff: the NPSSO exchange's redirect lands here (via
+-- plugin.on_http_redirect_response), carrying the auth code we then
+-- exchange for real tokens.
+local function handle_psn_authorize_redirect(status, location)
+    local code = location:match("[?&]code=([^&]+)")
+    if not code then
+        hebnix.log("PfpOverlay: PSN NPSSO exchange failed (status=" .. tostring(status) ..
+            " location=" .. tostring(location) .. "). NPSSO is likely expired or invalid — " ..
+            "get a fresh one by logging into playstation.com in a browser, then visiting " ..
+            "https://ca.account.sony.com/api/v1/ssocookie in the same browser session, and " ..
+            "updating psn_npsso in this plugin's settings.")
+        psn_token_flow_failed("npsso exchange failed (expired/invalid npsso?)")
+        return
+    end
+    code = code:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+    local body = psn_form_encode({
+        grant_type = "authorization_code",
+        code = code,
+        redirect_uri = PSN_OAUTH_REDIRECT_URI,
+    })
+    hebnix.http_post_async("psn_token_bootstrap", PSN_OAUTH_TOKEN_URL, body, {
+        ["Authorization"] = psn_basic_auth_header(),
+        ["Content-Type"] = "application/x-www-form-urlencoded",
+    })
+end
+
+function plugin.on_http_redirect_response(req_id, status, location)
+    if req_id ~= "psn_authorize" then return end
+    handle_psn_authorize_redirect(status, location)
+end
+
+-- Step 4: fetch the actual profile (avatarUrls) now that a valid access
+-- token exists. PSN's legacy profile endpoint keys by online ID
+-- (username), not numeric account ID — use the in-game display name,
+-- same as the Xbox gamertag branch below assumes for that platform.
+fetch_psn_profile = function(pid)
+    local p = players[pid]
+    if not p then return end
+    local access_token = load_psn_tokens().access_token
+    if not access_token then
+        p.status = "psn: no access token"
+        return
+    end
+    local username = url_encode(p.name)
+    local url = string.format(PSN_PROFILE_URL_FMT, username) .. "?fields=avatarUrls"
+    pending_requests[url] = { pid = pid, kind = "psn_profile" }
+    hebnix.http_get_async(url, url, { ["Authorization"] = "Bearer " .. access_token })
+    p.status = "fetching (psn)"
+end
+
 local function resolve_avatar(pid)
     local p = players[pid]
     if not p then return end
@@ -377,6 +653,11 @@ local function resolve_avatar(pid)
         pending_requests[url] = { pid = pid, kind = "metadata" }
         hebnix.http_get_async(url, url, { ["X-Authorization"] = key, ["Accept"] = "application/json" })
         p.status = "fetching (xbox)"
+    elseif p.platform:find("ps") then
+        -- "ps4"/"ps5"/"psn"/"psvita" etc — see the PSN auth section
+        -- above for the full flow. ensure_psn_token_then_fetch manages
+        -- its own status updates (authenticating / fetching / failed).
+        ensure_psn_token_then_fetch(pid)
     elseif p.platform == "epic" or p.platform == "switch" then
         p.status = "unsupported platform (RL default pic)"
     else
@@ -424,6 +705,10 @@ local function start_avatar_download(pid, avatar_url)
 end
 
 function plugin.on_http_response(url, status, body)
+    if url == "psn_token_refresh" or url == "psn_token_bootstrap" then
+        handle_psn_token_response(status, body, url == "psn_token_bootstrap")
+        return
+    end
     local req = pending_requests[url]
     if not req then return end
     pending_requests[url] = nil
@@ -452,6 +737,17 @@ function plugin.on_http_response(url, status, body)
         -- {"content":{"people":[{"displayPicRaw":"https://...","gamertag":"...",...}]}}
         local people = data.content and data.content.people
         avatar_url = people and people[1] and people[1].displayPicRaw
+    elseif p.platform:find("ps") then
+        -- {"profile": {"avatarUrls": [{"size": "m"/"l"/"xl", "avatarUrl": url}, ...]}}
+        -- — prefer the largest available, matching the Python resolver.
+        local urls = data.profile and data.profile.avatarUrls
+        if urls then
+            local by_size = {}
+            for _, entry in ipairs(urls) do
+                if entry.size and entry.avatarUrl then by_size[entry.size] = entry.avatarUrl end
+            end
+            avatar_url = by_size.xl or by_size.l or by_size.m
+        end
     end
 
     if avatar_url then
@@ -783,17 +1079,53 @@ end
 -- ==========================================
 
 function plugin.on_settings(ui)
-    ui.heading("PFP Overlay — Steam / Xbox")
+    ui.heading("PFP Overlay — Steam / Xbox / PSN")
     ui.label("Avatars render at RL's real scoreboard positions while the")
     ui.label("scoreboard button below is held. Set your Interface Scale")
     ui.label("to match RL exactly, or positions will be off.")
-    ui.label("PSN is not implemented yet — pending an answer on Hebnix's")
-    ui.label("networking API for the PSN OAuth redirect flow.")
 
     ui.space(8)
     ui.heading("API Keys")
     ui.text_input("steam_api_key", "Steam Web API key (steamcommunity.com/dev)", "")
     ui.text_input("xbox_api_key", "Xbox API key (xbl.io)", "")
+
+    ui.space(8)
+    ui.heading("PSN")
+    ui.label("PSN authenticates as your own PSN account rather than using an")
+    ui.label("app API key. One-time setup: log into playstation.com in a")
+    ui.label("browser, then in the SAME browser session visit")
+    ui.label("https://ca.account.sony.com/api/v1/ssocookie — paste the")
+    ui.label("\"npsso\" value it returns below. After that, this plugin")
+    ui.label("refreshes its own PSN session automatically; you only need to")
+    ui.label("repeat this if the NPSSO itself expires (rare).")
+    ui.text_input("psn_npsso", "PSN NPSSO")
+    if psn_have_valid_access_token() then
+        ui.colored_label("#2ecc71", "PSN: authenticated")
+    elseif load_psn_tokens().refresh_token then
+        ui.colored_label("#d35400", "PSN: token expired, will auto-refresh on next lookup")
+    else
+        ui.colored_label("#aaaaaa", "PSN: not authenticated yet")
+    end
+
+    ui.space(4)
+    ui.label("PSN lookups use the player's online ID (display name).")
+    ui.text_input("test_psn_username", "PSN username to test")
+    if ui.button("Test download my PSN avatar") then
+        local username = hebnix.get_string("test_psn_username", "")
+        if username ~= "" then
+            local pid = "TestPSN|" .. username
+            if not players[pid] then
+                players[pid] = {
+                    name = username, platform = "psn", platform_id = username,
+                    avatar_path = nil, avatar_url = nil, status = "new",
+                    team_num = 0, score = 0,
+                }
+                table.insert(player_order, pid)
+                seen[pid] = true
+            end
+            resolve_avatar(pid)
+        end
+    end
 
     ui.space(8)
     ui.heading("Interface Scale")
