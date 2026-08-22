@@ -1,0 +1,4 @@
+name = "PfpOverlay"
+author = "xplodingeggo"
+version = "0.1.0"
+entry = "main.lua"
