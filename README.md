@@ -1,4 +1,4 @@
-A Hebnix plugin port of [rl-profiles-linux](https://github.com/xplodingeggo/rl-profiles-linux) — shows Steam/Xbox/PSN profile pictures on Rocket League's real scoreboard, calibrated against the same layout math as the standalone Windows versions (see the `windows` branch).
+A Hebnix plugin port of [rl-profiles-linux](https://github.com/xplodingeggo/rl-profiles-linux/tree/windows) — shows Steam/Xbox/PSN profile pictures on Rocket League's real scoreboard, calibrated against the same layout math as the standalone Windows versions (see the `windows` branch).
 
 Runs inside [Hebnix](https://github.com/Hebbins/Hebnix-Public) - everything uses lua calls with hebnix
 
