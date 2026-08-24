@@ -8,7 +8,7 @@ Drop `pfpoverlay/` into Hebnix's `plugins/` directory (next to `hebnix-app.exe`)
 
 ## Requirements
 - Your Rocket League "Interface Scale" video setting entered in the plugin settings — positioning is calibrated relative to it.
-### <u>These are optional and only required if you want to fetch them manually without using tracker</u>
+### <u>These are optional and only required if you want to fetch them manually without using tracker.gg</u>
 - [Steam Web API key](https://steamcommunity.com/dev/apikey) and/or an [xbl.io](xbl.io) API key, set from the plugin's settings panel, to resolve avatars for those platforms.
 - For PSN: an NPSSO value (Settings > PSN in the plugin) — log into [playstation.com](https://www.playstation.com) in a browser, then visit [this](https://ca.account.sony.com/api/v1/ssocookie) in that same session to get one. One-time setup; the plugin refreshes its own PSN session automatically after that as long as you use it at least every 2 months
 
