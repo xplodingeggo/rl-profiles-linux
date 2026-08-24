@@ -96,7 +96,7 @@ local SCOREBOARD_LAYOUTS = {
     [4] = { blue = 419, orange = 796 },
     [3] = { blue = 528, orange = 792 },
     [2] = { blue = 591, orange = 793 },
-    [1] = { blue = 655, orange = 798 },
+    [1] = { blue = 655, orange = 794 },
 }
 
 local SCOREBOARD_UI_QUAD = {
