@@ -229,6 +229,13 @@ local function sanitize_filename(s)
     return (s:gsub("[^%w_.-]", "_"))
 end
 
+-- draw.image resolves paths against the plugin folder, so avatar_path is
+-- stored as "assets/cache/x.png". ui.image resolves against the assets/
+-- folder itself, so it needs that prefix stripped.
+local function ui_asset_path(path)
+    return (path:gsub("^assets/", ""))
+end
+
 local function detect_image_ext(url, body)
     local ext = url:match("%.([%a]+)%??")
     if ext then
@@ -244,13 +251,16 @@ local function detect_image_ext(url, body)
     return "png"
 end
 
--- avatar url -> player key, for on_http_download_response
+-- avatar url -> {key, source}, for on_http_download_response. source
+-- ("tracker" or "manual") keeps the two saved as separate files, so
+-- switching fetch mode always shows the right one instead of one
+-- silently overwriting the other's cached file on disk.
 local download_requests = {}
 
-local function start_avatar_download(key, avatar_url)
+local function start_avatar_download(key, avatar_url, source)
     local p = players[key]
     if not p then return end
-    download_requests[avatar_url] = key
+    download_requests[avatar_url] = { key = key, source = source }
     hebnix.http_download_async(avatar_url, avatar_url, {})
     p.status = "downloading avatar image"
 end
@@ -559,7 +569,7 @@ function plugin.on_http_response(url, status, body)
 
     if avatar_url then
         p.avatar_url = avatar_url
-        start_avatar_download(req.pid, avatar_url)
+        start_avatar_download(req.pid, avatar_url, "manual")
     else
         p.status = "no avatar in response (manual)"
     end
@@ -567,26 +577,29 @@ end
 
 local function process_tracker_stats(key, stats)
     local p = players[key]
-    if not p then return end
+    if not p or p.status == "override" then return end
     if stats.error then
         p.status = "tracker error: " .. tostring(stats.error)
     elseif stats.not_found then
         p.status = "tracker: profile not found"
     elseif stats.avatar_url and stats.avatar_url ~= "" then
         p.avatar_url = stats.avatar_url
-        start_avatar_download(key, stats.avatar_url)
+        start_avatar_download(key, stats.avatar_url, "tracker")
     else
         p.status = "no avatar available (tracker.gg has none for this profile)"
     end
 end
 
--- poll every pending tracker lookup once per tick
+-- poll every pending tracker lookup once per tick. pending_tracker maps
+-- the stats lookup key (hebnix.stats_result's key) to our player key -
+-- these differ for test fetches, which use fetch_profile_async's own
+-- "platform:identifier" key instead of a real match PrimaryId.
 local function poll_tracker_results()
-    for key in pairs(pending_tracker) do
-        local result = hebnix.stats_result(key)
+    for stats_key, player_key in pairs(pending_tracker) do
+        local result = hebnix.stats_result(stats_key)
         if result ~= nil and result ~= "pending" then
-            pending_tracker[key] = nil
-            process_tracker_stats(key, result)
+            pending_tracker[stats_key] = nil
+            process_tracker_stats(player_key, result)
         end
     end
 end
@@ -601,7 +614,6 @@ local function resolve_avatar(key)
         p.avatar_path = overrides[override_key]
         p.avatar_url = nil
         p.status = "override"
-        pending_tracker[key] = nil
         return
     end
     p.avatar_path = nil
@@ -623,15 +635,15 @@ local function resolve_avatar(key)
     end
 
     hebnix.fetch_stats_async(p.raw_pid, p.name)
-    pending_tracker[key] = true
+    pending_tracker[p.raw_pid] = key
     p.status = "fetching (tracker.gg)"
 end
 
 function plugin.on_http_download_response(url, status, body)
-    local key = download_requests[url]
-    if not key then return end
+    local req = download_requests[url]
+    if not req then return end
     download_requests[url] = nil
-    local p = players[key]
+    local p = players[req.key]
     if not p then return end
 
     if status ~= 200 then
@@ -640,7 +652,7 @@ function plugin.on_http_download_response(url, status, body)
     end
 
     local ext = detect_image_ext(url, body)
-    local filename = sanitize_filename(p.platform .. "_" .. p.platform_id) .. "." .. ext
+    local filename = sanitize_filename(p.platform .. "_" .. p.platform_id .. "_" .. req.source) .. "." .. ext
     local rel_path = "assets/cache/" .. filename
     local abs_path = PLUGIN_DIR .. "/assets/cache/" .. filename
     local f, open_err, open_errno = io.open(abs_path, "wb")
@@ -648,7 +660,7 @@ function plugin.on_http_download_response(url, status, body)
         f:write(body)
         f:close()
         p.avatar_path = rel_path
-        p.status = "resolved (downloaded, " .. #body .. " bytes)"
+        p.status = "resolved (" .. req.source .. ", " .. #body .. " bytes)"
         hebnix.log("PfpOverlayV2: downloaded avatar for " .. p.name .. " -> " .. abs_path ..
             " (" .. #body .. " bytes)")
     else
@@ -868,8 +880,6 @@ end
 -- Settings
 -- ==========================================
 
-local test_fetch_key = nil
-
 function plugin.on_settings(ui)
     ui.heading("PFP Overlay V2 — avatars via Hebnix's tracker.gg integration")
     ui.label("No API keys or PSN login needed - avatar lookup rides on the")
@@ -940,91 +950,60 @@ function plugin.on_settings(ui)
     ui.label("\"npsso\" value above.")
 
     ui.space(6)
-    ui.label("Manual test fetches, independent of the priority setting above:")
-    ui.text_input("test_steam_id", "SteamID64 to test", "")
-    if ui.button("Test download my Steam avatar (manual)") then
-        local test_id = hebnix.get_string("test_steam_id", "")
-        if test_id ~= "" then
-            local pid = "TestSteamManual|" .. test_id
-            if not players[pid] then
-                players[pid] = {
-                    name = "TestSteamUser", platform = "steam", platform_id = test_id,
-                    avatar_path = nil, avatar_url = nil, status = "new",
-                    team_num = 0, score = 0,
-                }
-                table.insert(player_order, pid)
-                seen[pid] = true
-            end
-            manual_fetch_steam(pid)
-        end
-    end
-    ui.text_input("test_xbox_gamertag", "Xbox gamertag to test", "")
-    if ui.button("Test download my Xbox avatar (manual)") then
-        local gamertag = hebnix.get_string("test_xbox_gamertag", "")
-        if gamertag ~= "" then
-            local pid = "TestXboxManual|" .. gamertag
-            if not players[pid] then
-                players[pid] = {
-                    name = gamertag, platform = "xboxone", platform_id = gamertag,
-                    avatar_path = nil, avatar_url = nil, status = "new",
-                    team_num = 1, score = 0,
-                }
-                table.insert(player_order, pid)
-                seen[pid] = true
-            end
-            manual_fetch_xbox(pid)
-        end
-    end
-    ui.text_input("test_psn_username", "PSN username to test", "")
-    if ui.button("Test download my PSN avatar (manual)") then
-        local username = hebnix.get_string("test_psn_username", "")
-        if username ~= "" then
-            local pid = "TestPsnManual|" .. username
-            if not players[pid] then
-                players[pid] = {
-                    name = username, platform = "psn", platform_id = username,
-                    avatar_path = nil, avatar_url = nil, status = "new",
-                    team_num = 0, score = 0,
-                }
-                table.insert(player_order, pid)
-                seen[pid] = true
-            end
-            ensure_psn_token_then_fetch(pid)
-        end
-    end
-
-    ui.space(8)
-    ui.heading("Test a tracker.gg lookup (no live match needed)")
-    ui.label("Uses hebnix.fetch_profile_async - same tracker.gg lookup used")
-    ui.label("for real players, just addressed by platform+id/gamertag/name")
-    ui.label("instead of a live match's PrimaryId.")
+    ui.heading("Test Fetch")
+    ui.label("Pick a platform + fetch method, type an id, and test it - this")
+    ui.label("also adds a temporary tracked entry so it shows in the debug")
+    ui.label("overlay too, same as a real player would.")
     local test_platform = ui.combo_box("test_platform", "Platform",
         { "steam", "xboxone", "epic", "psn", "switch" })
-    local test_identifier = ui.text_input("test_identifier", "SteamID64 / gamertag / username")
+    local test_mode = ui.combo_box("test_mode", "Fetch via", { "tracker", "manual" })
+    local test_identifier = ui.text_input("test_identifier", "SteamID64 / gamertag / username / etc")
+
     if ui.button("Test fetch avatar") then
         local identifier = test_identifier:match("^%s*(.-)%s*$")
         if identifier ~= "" then
-            local key = hebnix.fetch_profile_async(test_platform, identifier)
-            if key then
-                test_fetch_key = key
+            local key = "Test|" .. test_platform .. "|" .. identifier
+            if not players[key] then
+                players[key] = {
+                    name = identifier, platform = test_platform, platform_id = identifier,
+                    raw_pid = "Test|" .. identifier .. "|0", is_bot = false,
+                    avatar_path = nil, avatar_url = nil, status = "new",
+                    team_num = 0, score = 0,
+                }
+                table.insert(player_order, key)
+                seen[key] = true
+            end
+            local p = players[key]
+            p.avatar_path = nil
+            p.avatar_url = nil
+            if test_mode == "manual" then
+                if test_platform == "steam" then
+                    manual_fetch_steam(key)
+                elseif test_platform:find("xbox") then
+                    manual_fetch_xbox(key)
+                elseif test_platform:find("ps") then
+                    ensure_psn_token_then_fetch(key)
+                else
+                    p.status = "no manual method for " .. test_platform
+                end
+            else
+                local stats_key = hebnix.fetch_profile_async(test_platform, identifier)
+                if stats_key then
+                    pending_tracker[stats_key] = key
+                    p.status = "fetching (tracker.gg)"
+                end
             end
         end
     end
-    if test_fetch_key then
-        local result = hebnix.stats_result(test_fetch_key)
-        if result == nil then
-            ui.label("test: not requested")
-        elseif result == "pending" then
-            ui.label("test: fetching...")
-        elseif result.error then
-            ui.colored_label("#d35400", "test: error - " .. tostring(result.error))
-        elseif result.not_found then
-            ui.colored_label("#d35400", "test: profile not found")
-        elseif result.avatar_url and result.avatar_url ~= "" then
-            ui.colored_label("#2ecc71", "test: avatar found")
-            ui.image(result.avatar_url, { width = 64, height = 64 })
-        else
-            ui.colored_label("#aaaaaa", "test: no avatar for this profile")
+
+    local test_key = "Test|" .. test_platform .. "|" .. test_identifier:match("^%s*(.-)%s*$")
+    local test_p = players[test_key]
+    if test_p then
+        ui.label("status: " .. test_p.status)
+        if test_p.avatar_path then
+            ui.image(ui_asset_path(test_p.avatar_path), { width = 64, height = 64 })
+        elseif test_p.avatar_url then
+            ui.image(test_p.avatar_url, { width = 64, height = 64 })
         end
     end
 
@@ -1109,16 +1088,21 @@ function plugin.on_settings(ui)
 
     ui.space(10)
     ui.heading("Tracked Players")
-    ui.label("\"Copy ID\" copies platform|id in the exact format overrides.json")
-    ui.label("expects, ready to paste into the override ID field above.")
+    ui.label("\"Copy ID\" copies just the player ID (platform is shown below,")
+    ui.label("pick it separately in the override Platform dropdown above).")
     if #player_order == 0 then
         ui.label("No players tracked yet — join a match.")
     end
     for _, pid in ipairs(player_order) do
         local p = players[pid]
         local tag = hebnix.platform_tag(p.raw_pid or pid)
-        local id_str = p.platform .. "|" .. p.platform_id
+        local id_str = p.platform_id
         ui.horizontal(function()
+            if p.avatar_path then
+                ui.image(ui_asset_path(p.avatar_path), { width = 32, height = 32 })
+            elseif p.avatar_url then
+                ui.image(p.avatar_url, { width = 32, height = 32 })
+            end
             ui.label(tag .. " " .. p.name .. "  —  " .. p.status)
             if ui.button("Copy ID") then
                 ui.copy_to_clipboard(id_str)
