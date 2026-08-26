@@ -1017,6 +1017,10 @@ function plugin.on_settings(ui)
     ui.label("folder (draw.image can't load paths outside it) — drop your")
     ui.label("image there first, then reference it below as assets/name.png.")
 
+    if ui.button("Open assets folder") then
+        hebnix.settings.open_assets()
+    end
+
     ui.space(4)
     local override_platform = ui.combo_box("override_add_platform", "Platform",
         { "steam", "xboxone", "epic", "psn", "switch" })
