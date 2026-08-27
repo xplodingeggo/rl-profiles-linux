@@ -681,7 +681,32 @@ local function clear_players()
     is_replay = false
 end
 
-local function track_player(pid, name)
+local function remove_player(key)
+    if not players[key] then return end
+    players[key] = nil
+    seen[key] = nil
+    for i = #player_order, 1, -1 do
+        if player_order[i] == key then
+            table.remove(player_order, i)
+            break
+        end
+    end
+end
+
+-- Drops any disconnected player still shown on team_num - called when
+-- someone new joins that team, since that's the replacement showing up.
+local function clear_disconnected_ghosts(team_num, except_key)
+    local to_remove = {}
+    for _, key in ipairs(player_order) do
+        local p = players[key]
+        if p and p.disconnected and p.team_num == team_num and key ~= except_key then
+            table.insert(to_remove, key)
+        end
+    end
+    for _, key in ipairs(to_remove) do remove_player(key) end
+end
+
+local function track_player(pid, name, team_num, shortcut)
     if pid == "" and name == "" then return end
     local key = player_key(pid, name)
     if seen[key] then return end
@@ -692,18 +717,20 @@ local function track_player(pid, name)
         name = name, platform = platform, platform_id = platform_id, is_bot = is_bot,
         raw_pid = pid,
         avatar_path = nil, avatar_url = nil, status = is_bot and "bot (no avatar)" or "new",
-        team_num = 0, score = 0,
+        team_num = team_num or 0, score = 0, shortcut = shortcut or 0, disconnected = false,
     }
     table.insert(player_order, key)
     if not is_bot then resolve_avatar(key) end
+    if team_num then clear_disconnected_ghosts(team_num, key) end
 end
 
-local function update_player_state(pid, name, team_num, score)
+local function update_player_state(pid, name, team_num, score, shortcut)
     local key = player_key(pid, name)
     local p = players[key]
     if not p then return end
     p.team_num = team_num or p.team_num
     p.score = score or p.score
+    p.shortcut = shortcut or p.shortcut
 end
 
 -- ==========================================
@@ -720,13 +747,27 @@ function plugin.on_game_event(event_type, event)
             local pid = p.PrimaryId or ""
             local name = p.Name or "Unknown"
             if pid ~= "" or name ~= "" then
-                track_player(pid, name)
-                update_player_state(pid, name, p.TeamNum, p.Score)
+                track_player(pid, name, p.TeamNum, p.Shortcut)
+                update_player_state(pid, name, p.TeamNum, p.Score, p.Shortcut)
             end
         end
         local game = event.data.Game
         if game and game.bReplay ~= nil then
             is_replay = game.bReplay
+        end
+    elseif event_type == "PlayerLeft" then
+        -- keep them tracked but marked disconnected instead of removing
+        -- outright - draw_scoreboard_avatars renders them at the bottom
+        -- row of the next team size up, same spot RL's own scoreboard
+        -- leaves a departed player. clear_disconnected_ghosts drops them
+        -- for good once someone new takes their place on that team.
+        local pid = event.data.PrimaryId or ""
+        local name = event.data.PlayerName or event.data.Name or ""
+        local key = player_key(pid, name)
+        local p = players[key]
+        if p then
+            p.disconnected = true
+            hebnix.log("PfpOverlayV2: PlayerLeft " .. name .. " (" .. key .. "), marked disconnected")
         end
     elseif event_type == "GoalScored" then
         local scorer_name = event.data.Scorer and event.data.Scorer.Name or ""
@@ -792,20 +833,34 @@ function plugin.on_tick()
     end
 end
 
+-- Returns each team's active (still-connected) roster, plus at most one
+-- disconnected "ghost" player per team, kept separate from the active
+-- list so a departed player never affects the other players' rows.
 local function scoreboard_teams()
     local blue, orange = {}, {}
+    local blue_ghost, orange_ghost = nil, nil
     for _, pid in ipairs(player_order) do
         local p = players[pid]
-        if p.team_num == 1 then
+        local is_orange = p.team_num == 1
+        if p.disconnected then
+            if is_orange then orange_ghost = pid else blue_ghost = pid end
+        elseif is_orange then
             table.insert(orange, pid)
         else
             table.insert(blue, pid)
         end
     end
-    local function by_score_desc(a, b) return players[a].score > players[b].score end
+    -- same order RL's own scoreboard uses: score descending, and when
+    -- scores tie (usually 0-0 early in a match) it falls back to each
+    -- player's shortcut id, also descending.
+    local function by_score_desc(a, b)
+        local pa, pb = players[a], players[b]
+        if pa.score ~= pb.score then return pa.score > pb.score end
+        return (pa.shortcut or 0) > (pb.shortcut or 0)
+    end
     table.sort(blue, by_score_desc)
     table.sort(orange, by_score_desc)
-    return blue, orange
+    return blue, orange, blue_ghost, orange_ghost
 end
 
 local function draw_debug_stack(draw)
@@ -815,7 +870,7 @@ local function draw_debug_stack(draw)
     local goal_age = last_goal and (tostring(os.time() - last_goal.timestamp) .. "s ago (" ..
         last_goal.scorer_name .. ")") or "none"
     draw.text(AVATAR_START_X, AVATAR_START_Y - 36,
-        "PfpOverlayV2 debug stack  —  is_replay=" .. tostring(is_replay) .. "  last_goal=" .. goal_age,
+        "pfpoverlayv2 debug overlay  —  is_replay=" .. tostring(is_replay) .. "  last_goal=" .. goal_age,
         { color = "#00ff00ff", size = 16 })
     for _, pid in ipairs(player_order) do
         local p = players[pid]
@@ -826,32 +881,53 @@ local function draw_debug_stack(draw)
             end)
         end
         local team_label = (p.team_num == 1) and "orange" or "blue"
+        local disc_tag = p.disconnected and " [disconnected]" or ""
         draw.text(AVATAR_START_X + AVATAR_SIZE + 8, y + AVATAR_SIZE / 2 - 8,
-            tag .. " " .. p.name .. "  [" .. team_label .. " " .. tostring(p.score) .. "]  —  " .. p.status,
+            tag .. " " .. p.name .. "  [" .. team_label .. " " .. tostring(p.score) .. "]" .. disc_tag ..
+                "  —  " .. p.status,
             { color = "#ffffffff", size = 14 })
         y = y + AVATAR_SIZE + AVATAR_GAP
     end
 end
 
-local function draw_scoreboard_avatars(draw, w, h)
-    if not scoreboard_held then return end
-    local blue, orange = scoreboard_teams()
-    local team_size = math.max(#blue, #orange)
-    if team_size == 0 then return end
-
-    local slots = get_scoreboard_slots(team_size, w, h)
-    for _, slot in ipairs(slots) do
-        local list = (slot.team == "blue") and blue or orange
-        local pid = list[slot.row + 1]
-        if pid then
-            local p = players[pid]
-            if p.avatar_path then
-                pcall(function()
-                    draw.image(p.avatar_path, slot.x, slot.y, slot.w, slot.h)
-                end)
+-- Draws one team's rows using ONLY that team's own size - a 1-player
+-- team next to a 2-player team (unfair exhibition modes, or a real
+-- match down to fewer active players) each get their own real layout
+-- instead of both being forced to match the bigger side.
+local function draw_team_avatars(draw, team_color, list, ghost, w, h)
+    local size = #list
+    if size > 0 then
+        for _, slot in ipairs(get_scoreboard_slots(size, w, h)) do
+            if slot.team == team_color then
+                local p = players[list[slot.row + 1]]
+                if p and p.avatar_path then
+                    pcall(function() draw.image(p.avatar_path, slot.x, slot.y, slot.w, slot.h) end)
+                end
             end
         end
     end
+    if ghost then
+        -- one row bigger than the active layout, at the new bottom row -
+        -- e.g. a 2v2 that lost a player renders that team like a 3v3
+        -- with the departed player pinned to row 3.
+        for _, slot in ipairs(get_scoreboard_slots(size + 1, w, h)) do
+            if slot.team == team_color and slot.row == size then
+                local p = players[ghost]
+                if p.avatar_path then
+                    pcall(function() draw.image(p.avatar_path, slot.x, slot.y, slot.w, slot.h) end)
+                end
+            end
+        end
+    end
+end
+
+local function draw_scoreboard_avatars(draw, w, h)
+    if not scoreboard_held then return end
+    local blue, orange, blue_ghost, orange_ghost = scoreboard_teams()
+    if #blue == 0 and #orange == 0 and not blue_ghost and not orange_ghost then return end
+
+    draw_team_avatars(draw, "blue", blue, blue_ghost, w, h)
+    draw_team_avatars(draw, "orange", orange, orange_ghost, w, h)
 end
 
 local function draw_goal_nameplate(draw, w, h)
@@ -881,85 +957,144 @@ end
 -- ==========================================
 
 function plugin.on_settings(ui)
-    ui.heading("PFP Overlay V2 — avatars via Hebnix's tracker.gg integration")
-    ui.label("No API keys or PSN login needed - avatar lookup rides on the")
-    ui.label("same tracker.gg profile fetch Hebnix already does for stats.")
-    ui.label("Avatars render at RL's real scoreboard positions while the")
-    ui.label("scoreboard button below is held. Set your Interface Scale to")
-    ui.label("match RL exactly, or positions will be off.")
+    ui.heading("pfp overlay v2")
+    ui.label("shows player avatars on the scoreboard and goal replay nameplate.")
+    ui.label("avatars come from tracker.gg automatically, no api keys needed.")
+
+    -- ==========================================
+    -- quick start - the stuff you need to set up first
+    -- ==========================================
+
+    ui.space(10)
+    ui.heading("Quick Start")
+
+    ui.space(4)
+    ui.heading("Interface scale")
+    ui.label("set this to match RL's own options > video > interface scale,")
+    ui.label("or the profiles will render in the wrong spot.")
+    ui.text_input("rl_ui_scale", "RL interface scale", tostring(REFERENCE_UI_SCALE))
 
     ui.space(8)
-    ui.heading("Interface Scale")
-    ui.label("Must match RL's Options > Video > Interface Scale exactly")
-    ui.label("(e.g. 0.75) — needed for avatars to land on the right pixels.")
-    ui.text_input("rl_ui_scale", "RL Interface Scale", tostring(REFERENCE_UI_SCALE))
-
-    ui.space(8)
-    ui.heading("Scoreboard Button")
-    ui.label("Bind this to whatever shows RL's own scoreboard (hold TAB on")
-    ui.label("keyboard, View/Select on controller) — avatars only render at")
-    ui.label("scoreboard positions while this is held.")
+    ui.heading("Scoreboard button")
+    ui.label("bind whatever shows RL's scoreboard (hold tab on keyboard,")
+    ui.label("view/select on controller).")
     local sb_bind = hebnix.get_string("scoreboard_button", "")
     ui.horizontal(function()
-        ui.label("Scoreboard bind: " .. (sb_bind ~= "" and sb_bind or "(none set)"))
+        ui.label("bind: " .. (sb_bind ~= "" and sb_bind or "(none set)"))
         if scoreboard_capturing_bind then
-            ui.colored_label("#d35400", "Press any key/button...")
+            ui.colored_label("#d35400", "press any key/button...")
         else
-            if ui.button("Set") then
+            if ui.button("set") then
                 if hebnix.capture_bind_async(10) then
                     scoreboard_capturing_bind = true
                 end
             end
-            if ui.button("Clear") then
+            if ui.button("clear") then
                 hebnix.set("scoreboard_button", "")
             end
         end
     end)
 
     ui.space(8)
-    ui.heading("API Keys & Fetch Priority")
-    ui.label("Per platform: tracker.gg (default, no key needed) or manual —")
-    ui.label("this plugin's own API key/PSN-login pipeline from PfpOverlay v1.")
-    ui.label("A key/npsso field can stay empty as long as tracker.gg is")
-    ui.label("prioritized. If manual is prioritized but nothing is configured,")
-    ui.label("it automatically falls back to tracker.gg for that platform.")
+    ui.heading("Avatar overrides")
+    ui.label("Force a specific image for one player, by platform + id. handy")
+    ui.label("for switch (no avatar api at all) or anyone tracker.gg doesn't")
+    ui.label("have a picture for. Drop the image in the assets folder first,")
+    ui.label("then reference it below as assets/name.png.")
+
+    if ui.button("open assets folder") then
+        hebnix.settings.open_assets()
+    end
+
+    ui.space(4)
+    local override_platform = ui.combo_box("override_add_platform", "platform",
+        { "steam", "xboxone", "epic", "psn", "switch" })
+    local override_id = ui.text_input("override_add_id", "player id (steamid64 / gamertag / etc)")
+    local override_path = ui.text_input("override_add_path", "image path, e.g. assets/me.png")
+
+    if ui.button("add / update override") then
+        local id = override_id:match("^%s*(.-)%s*$")
+        local path = override_path:match("^%s*(.-)%s*$")
+        if id ~= "" and path ~= "" then
+            local key = override_platform .. "|" .. id
+            local overrides = load_overrides()
+            overrides[key] = path
+            write_overrides_file(overrides)
+        end
+    end
+
+    ui.space(6)
+    local current_overrides = load_overrides()
+    local override_keys = {}
+    for k in pairs(current_overrides) do table.insert(override_keys, k) end
+    table.sort(override_keys)
+    if #override_keys == 0 then
+        ui.label("No overrides yet.")
+    else
+        for _, k in ipairs(override_keys) do
+            ui.horizontal(function()
+                ui.label(k .. "  ->  " .. current_overrides[k])
+                if ui.button("remove") then
+                    current_overrides[k] = nil
+                    write_overrides_file(current_overrides)
+                end
+            end)
+        end
+    end
+
+    ui.space(6)
+    if ui.button("open overrides.json") then
+        if not read_overrides_file() then write_overrides_file(load_overrides()) end
+        hebnix.open_url(OVERRIDES_PATH)
+    end
+    ui.label(OVERRIDES_PATH)
+
+    -- ==========================================
+    -- fetching - api keys, priority, manual test
+    -- ==========================================
+
+    ui.space(12)
+    ui.heading("Fetching")
+    ui.label("Per platform, pick tracker.gg (default, no key needed) or")
+    ui.label("manual - this plugin's own key/psn-login pipeline from v1. if")
+    ui.label("manual is picked but nothing's filled in, it just falls back")
+    ui.label("to tracker.gg for that platform.")
 
     ui.space(4)
     ui.horizontal(function()
-        ui.combo_box("priority_steam", "Steam priority", { "tracker", "manual" })
-        ui.text_input("steam_api_key", "Steam Web API key (steamcommunity.com/dev)", "")
+        ui.combo_box("priority_steam", "steam priority", { "tracker", "manual" })
+        ui.text_input("steam_api_key", "steam web api key (steamcommunity.com/dev)", "")
     end)
     ui.horizontal(function()
-        ui.combo_box("priority_xboxone", "Xbox priority", { "tracker", "manual" })
-        ui.text_input("xbox_api_key", "Xbox API key (xbl.io)", "")
+        ui.combo_box("priority_xboxone", "xbox priority", { "tracker", "manual" })
+        ui.text_input("xbox_api_key", "xbox api key (xbl.io)", "")
     end)
     ui.horizontal(function()
-        ui.combo_box("priority_psn", "PSN priority", { "tracker", "manual" })
-        ui.text_input("psn_npsso", "PSN NPSSO", "")
+        ui.combo_box("priority_psn", "psn priority", { "tracker", "manual" })
+        ui.text_input("psn_npsso", "psn npsso", "")
     end)
     if psn_have_valid_access_token() then
-        ui.colored_label("#2ecc71", "PSN (manual): authenticated")
+        ui.colored_label("#2ecc71", "psn (manual): authenticated")
     elseif load_psn_tokens().refresh_token then
-        ui.colored_label("#d35400", "PSN (manual): token expired, will auto-refresh on next lookup")
+        ui.colored_label("#d35400", "psn (manual): token expired, will auto-refresh on next lookup")
     else
-        ui.colored_label("#aaaaaa", "PSN (manual): not authenticated yet")
+        ui.colored_label("#aaaaaa", "psn (manual): not authenticated yet")
     end
-    ui.label("One-time PSN setup: log into playstation.com in a browser, then")
-    ui.label("in the SAME browser session visit")
+    ui.label("One-time psn setup: log into playstation.com in a browser, then")
+    ui.label("in that same browser session visit")
     ui.label("https://ca.account.sony.com/api/v1/ssocookie and paste its")
     ui.label("\"npsso\" value above.")
 
-    ui.space(6)
-    ui.heading("Test Fetch")
-    ui.label("Pick a platform + fetch method, type an id, and test it - this")
-    ui.label("also adds a temporary tracked entry so it shows in the debug")
-    ui.label("overlay too, same as a real player would.")
-    local test_platform = ui.combo_box("test_platform", "Platform",
+    ui.space(8)
+    ui.heading("Test fetch")
+    ui.label("Pick a platform + fetch method, type an id, and try it - also")
+    ui.label("adds a temporary entry to the tracked players list below.")
+    local test_platform = ui.combo_box("test_platform", "platform",
         { "steam", "xboxone", "epic", "psn", "switch" })
-    local test_mode = ui.combo_box("test_mode", "Fetch via", { "tracker", "manual" })
-    local test_identifier = ui.text_input("test_identifier", "SteamID64 / gamertag / username / etc")
+    local test_mode = ui.combo_box("test_mode", "fetch via", { "tracker", "manual" })
+    local test_identifier = ui.text_input("test_identifier", "steamid64 / gamertag / username / etc")
 
-    if ui.button("Test fetch avatar") then
+    if ui.button("test fetch avatar") then
         local identifier = test_identifier:match("^%s*(.-)%s*$")
         if identifier ~= "" then
             local key = "Test|" .. test_platform .. "|" .. identifier
@@ -1007,95 +1142,22 @@ function plugin.on_settings(ui)
         end
     end
 
-    ui.space(8)
-    ui.heading("Avatar Overrides")
-    ui.label("Force a specific local image for one player, by platform + ID —")
-    ui.label("useful for Switch (no public avatar API exists at all) or any")
-    ui.label("profile tracker.gg doesn't have an avatar for, or to override")
-    ui.label("someone's real avatar entirely.")
-    ui.label("The image must already exist under this plugin's own assets/")
-    ui.label("folder (draw.image can't load paths outside it) — drop your")
-    ui.label("image there first, then reference it below as assets/name.png.")
+    -- ==========================================
+    -- tracked players
+    -- ==========================================
 
-    if ui.button("Open assets folder") then
-        hebnix.settings.open_assets()
-    end
-
-    ui.space(4)
-    local override_platform = ui.combo_box("override_add_platform", "Platform",
-        { "steam", "xboxone", "epic", "psn", "switch" })
-    local override_id = ui.text_input("override_add_id", "Player ID (SteamID64 / gamertag / etc)")
-    local override_path = ui.text_input("override_add_path", "Image path, e.g. assets/me.png")
-
-    if ui.button("Add / Update override") then
-        local id = override_id:match("^%s*(.-)%s*$")
-        local path = override_path:match("^%s*(.-)%s*$")
-        if id ~= "" and path ~= "" then
-            local key = override_platform .. "|" .. id
-            local overrides = load_overrides()
-            overrides[key] = path
-            write_overrides_file(overrides)
-        end
-    end
-
-    ui.space(6)
-    local current_overrides = load_overrides()
-    local override_keys = {}
-    for k in pairs(current_overrides) do table.insert(override_keys, k) end
-    table.sort(override_keys)
-    if #override_keys == 0 then
-        ui.label("No overrides yet.")
-    else
-        for _, k in ipairs(override_keys) do
-            ui.horizontal(function()
-                ui.label(k .. "  ->  " .. current_overrides[k])
-                if ui.button("Remove") then
-                    current_overrides[k] = nil
-                    write_overrides_file(current_overrides)
-                end
-            end)
-        end
-    end
-
-    ui.space(6)
-    if ui.button("Open overrides.json") then
-        if not read_overrides_file() then write_overrides_file(load_overrides()) end
-        hebnix.open_url(OVERRIDES_PATH)
-    end
-    ui.label(OVERRIDES_PATH)
-
-    ui.space(8)
-    ui.heading("Overlay Toggle Bind")
-    local bind = hebnix.get_string("overlay_toggle_bind", "")
-    ui.horizontal(function()
-        ui.label("Toggle key/button: " .. (bind ~= "" and bind or "(none — always visible)"))
-        if capturing_bind then
-            ui.colored_label("#d35400", "Press any key/button...")
-        else
-            if ui.button("Set") then
-                if hebnix.capture_bind_async(10) then
-                    capturing_bind = true
-                end
-            end
-            if ui.button("Clear") then
-                hebnix.set("overlay_toggle_bind", "")
-            end
-        end
-    end)
-    ui.label("Currently: overlay is " .. (overlay_visible and "VISIBLE" or "HIDDEN"))
-
-    ui.space(8)
-    if ui.button("Re-resolve all tracked players") then
+    ui.space(12)
+    ui.heading("Tracked players")
+    if ui.button("re-resolve all") then
         for _, pid in ipairs(player_order) do resolve_avatar(pid) end
     end
-    if ui.button("Clear tracked players") then clear_players() end
+    if ui.button("clear tracked players") then clear_players() end
 
-    ui.space(10)
-    ui.heading("Tracked Players")
-    ui.label("\"Copy ID\" copies just the player ID (platform is shown below,")
-    ui.label("pick it separately in the override Platform dropdown above).")
+    ui.space(4)
+    ui.label("\"copy id\" copies just the player id - pick the matching")
+    ui.label("platform separately in the override dropdown above.")
     if #player_order == 0 then
-        ui.label("No players tracked yet — join a match.")
+        ui.label("no players tracked yet, join a match.")
     end
     for _, pid in ipairs(player_order) do
         local p = players[pid]
@@ -1107,12 +1169,40 @@ function plugin.on_settings(ui)
             elseif p.avatar_url then
                 ui.image(p.avatar_url, { width = 32, height = 32 })
             end
-            ui.label(tag .. " " .. p.name .. "  —  " .. p.status)
-            if ui.button("Copy ID") then
+            local disc_tag = p.disconnected and " [disconnected]" or ""
+            ui.label(tag .. " " .. p.name .. disc_tag .. "  —  " .. p.status)
+            if ui.button("copy id") then
                 ui.copy_to_clipboard(id_str)
             end
         end)
     end
+
+    -- ==========================================
+    -- debug overlay - the on-screen list of tracked players + status,
+    -- separate from the scoreboard pfps above
+    -- ==========================================
+
+    ui.space(12)
+    ui.heading("Debug overlay")
+    ui.label("An on-screen list of tracked players and their fetch status,")
+    ui.label("for troubleshooting - not the scoreboard pfps themselves.")
+    local bind = hebnix.get_string("overlay_toggle_bind", "")
+    ui.horizontal(function()
+        ui.label("toggle bind: " .. (bind ~= "" and bind or "(none — always visible)"))
+        if capturing_bind then
+            ui.colored_label("#d35400", "press any key/button...")
+        else
+            if ui.button("set") then
+                if hebnix.capture_bind_async(10) then
+                    capturing_bind = true
+                end
+            end
+            if ui.button("clear") then
+                hebnix.set("overlay_toggle_bind", "")
+            end
+        end
+    end)
+    ui.label("currently: " .. (overlay_visible and "visible" or "hidden"))
 end
 
 function plugin.on_unload()
