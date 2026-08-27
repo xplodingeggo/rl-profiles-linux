@@ -957,9 +957,8 @@ end
 -- ==========================================
 
 function plugin.on_settings(ui)
-    ui.heading("pfp overlay v2")
-    ui.label("shows player avatars on the scoreboard and goal replay nameplate.")
-    ui.label("avatars come from tracker.gg automatically, no api keys needed.")
+    ui.label("Shows player avatars on the scoreboard and goal replay nameplate.")
+    ui.label("Avatars come from tracker.gg automatically, no api keys needed.")
 
     -- ==========================================
     -- quick start - the stuff you need to set up first
