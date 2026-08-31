@@ -739,6 +739,7 @@ end
 
 function plugin.on_load()
     hebnix.log("PfpOverlayV2 loaded")
+    hebnix.refresh_action_binds()
 end
 
 function plugin.on_game_event(event_type, event)
@@ -819,8 +820,12 @@ function plugin.on_tick()
         end
     end
 
-    local sb_bind = hebnix.get_string("scoreboard_button", "")
-    scoreboard_held = sb_bind ~= "" and hebnix.is_bind_pressed(sb_bind)
+    if hebnix.get_bool("scoreboard_auto_detect", true) then
+        scoreboard_held = hebnix.is_action_pressed("togglescoreboard")
+    else
+        local sb_bind = hebnix.get_string("scoreboard_button", "")
+        scoreboard_held = sb_bind ~= "" and hebnix.is_bind_pressed(sb_bind)
+    end
 
     if scoreboard_capturing_bind then
         local status, bind_result = hebnix.capture_bind_result()
@@ -957,8 +962,9 @@ end
 -- ==========================================
 
 function plugin.on_settings(ui)
-    ui.label("Shows player avatars on the scoreboard and goal replay nameplate.")
-    ui.label("Avatars come from tracker.gg automatically, no api keys needed.")
+    ui.heading("pfp overlay v2")
+    ui.label("shows player avatars on the scoreboard and goal replay nameplate.")
+    ui.label("avatars come from tracker.gg automatically, no api keys needed.")
 
     -- ==========================================
     -- quick start - the stuff you need to set up first
@@ -975,24 +981,39 @@ function plugin.on_settings(ui)
 
     ui.space(8)
     ui.heading("Scoreboard button")
-    ui.label("bind whatever shows RL's scoreboard (hold tab on keyboard,")
-    ui.label("view/select on controller).")
-    local sb_bind = hebnix.get_string("scoreboard_button", "")
-    ui.horizontal(function()
-        ui.label("bind: " .. (sb_bind ~= "" and sb_bind or "(none set)"))
-        if scoreboard_capturing_bind then
-            ui.colored_label("#d35400", "press any key/button...")
+    ui.label("avatars only render at scoreboard positions while this is held.")
+    local auto_detect = ui.checkbox("scoreboard_auto_detect",
+        "auto-detect from RL's own bindings (recommended)", true)
+    if auto_detect then
+        local detected = hebnix.get_action_binds("togglescoreboard")
+        if #detected == 0 then
+            ui.colored_label("#d35400", "no scoreboard bind found in your RL settings yet.")
         else
-            if ui.button("set") then
-                if hebnix.capture_bind_async(10) then
-                    scoreboard_capturing_bind = true
+            ui.label("detected: " .. table.concat(detected, ", "))
+        end
+        if ui.button("refresh from RL settings") then
+            hebnix.refresh_action_binds()
+        end
+    else
+        ui.label("bind whatever shows RL's scoreboard (hold tab on keyboard,")
+        ui.label("view/select on controller).")
+        local sb_bind = hebnix.get_string("scoreboard_button", "")
+        ui.horizontal(function()
+            ui.label("bind: " .. (sb_bind ~= "" and sb_bind or "(none set)"))
+            if scoreboard_capturing_bind then
+                ui.colored_label("#d35400", "press any key/button...")
+            else
+                if ui.button("set") then
+                    if hebnix.capture_bind_async(10) then
+                        scoreboard_capturing_bind = true
+                    end
+                end
+                if ui.button("clear") then
+                    hebnix.set("scoreboard_button", "")
                 end
             end
-            if ui.button("clear") then
-                hebnix.set("scoreboard_button", "")
-            end
-        end
-    end)
+        end)
+    end
 
     ui.space(8)
     ui.heading("Avatar overrides")
