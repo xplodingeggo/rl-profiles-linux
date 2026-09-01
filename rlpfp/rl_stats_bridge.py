@@ -67,6 +67,7 @@ class Player:
     splitscreen: int
     team_num: Optional[int] = None
     score: int = 0  # updated from UpdateState snapshots
+    shortcut: int = 0  # stable per-player id from UpdateState, used as a scoreboard sort tiebreak
     avatar_path: Optional[str] = None  # local cache path, filled in by PFP worker
 
     def key(self) -> str:
@@ -241,10 +242,13 @@ def handle_event(msg: dict) -> None:
                 log.info("UpdateState player payload keys: %s", list(p.keys()))
                 handle_event._logged_player_keys = True
 
+            shortcut = p.get("Shortcut") or 0
+
             existing = lobby.players.get(key)
             if existing:
                 existing.team_num = p.get("TeamNum")
                 existing.score = score
+                existing.shortcut = shortcut
             else:
                 lobby.players[key] = Player(
                     name=p.get("Name", ""),
@@ -253,6 +257,7 @@ def handle_event(msg: dict) -> None:
                     splitscreen=split,
                     team_num=p.get("TeamNum"),
                     score=score,
+                    shortcut=shortcut,
                 )
         lobby.match_guid = data.get("MatchGuid") or lobby.match_guid
 

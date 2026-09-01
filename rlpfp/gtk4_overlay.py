@@ -663,15 +663,18 @@ class Overlay(Gtk.Application):
 
             # Split players by team and sort by score (descending) so
             # highest-scoring players occupy the top slots, matching RL's
-            # actual scoreboard display order.
+            # actual scoreboard display order. When scores tie (usually
+            # 0-0 early in a match) fall back to each player's shortcut
+            # id, also descending, instead of leaving row order random.
+            sort_key = lambda p: (p.get("score", 0), p.get("shortcut", 0))
             blue = sorted(
                 [p for p in players if p.get("team_num") == 0],
-                key=lambda p: p.get("score", 0),
+                key=sort_key,
                 reverse=True,
             )
             orange = sorted(
                 [p for p in players if p.get("team_num") == 1],
-                key=lambda p: p.get("score", 0),
+                key=sort_key,
                 reverse=True,
             )
 
