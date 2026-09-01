@@ -385,13 +385,17 @@ class Overlay:
             return
 
         if scoreboard_visible:
+            # RL's own scoreboard order: score descending, and when scores
+            # tie (usually 0-0 early in a match) it falls back to each
+            # player's shortcut id, also descending.
+            sort_key = lambda p: (p.get("score", 0), p.get("shortcut", 0))
             blue = sorted(
                 [p for p in players if p.get("team_num") == 0],
-                key=lambda p: p.get("score", 0), reverse=True,
+                key=sort_key, reverse=True,
             )
             orange = sorted(
                 [p for p in players if p.get("team_num") == 1],
-                key=lambda p: p.get("score", 0), reverse=True,
+                key=sort_key, reverse=True,
             )
 
             team_size = max(len(blue), len(orange), 1)
