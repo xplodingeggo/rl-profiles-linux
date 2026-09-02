@@ -61,8 +61,8 @@ local function load_overrides()
     return {}
 end
 
--- "tracker" (default) or "manual". epic/switch have no manual method,
--- so they always go through tracker.gg.
+-- "tracker" (default) or "manual". epic has no manual method, so it
+-- always goes through tracker.gg.
 local function platform_priority(platform)
     if platform == "steam" then return hebnix.get_string("priority_steam", "tracker") end
     if platform:find("xbox") then return hebnix.get_string("priority_xboxone", "tracker") end
@@ -85,7 +85,26 @@ local ROW_HEIGHT = 56
 local BOX_SIZE = 48
 local SLOT_X = 714
 
+-- Interface Scale, read straight from the .save profile (GameplaySettingsSave_TA.UIScale)
+-- instead of asking the user to type it in. Refreshed on a timer since
+-- reading + parsing the save file isn't free enough to do every frame.
+local detected_ui_scale = nil
+local last_ui_scale_check = 0
+
+local function refresh_detected_ui_scale()
+    if os.time() - last_ui_scale_check < 5 then return end
+    last_ui_scale_check = os.time()
+
+    local summary = hebnix.load_save_summary()
+    if summary and summary.ui_scale and summary.ui_scale > 0 then
+        detected_ui_scale = summary.ui_scale
+    end
+end
+
 local function ui_scale()
+    if hebnix.get_bool("ui_scale_auto_detect", true) and detected_ui_scale then
+        return detected_ui_scale
+    end
     local raw = hebnix.get_string("rl_ui_scale", "")
     local value = tonumber(raw)
     if not value or value <= 0 then return REFERENCE_UI_SCALE end
@@ -267,6 +286,88 @@ end
 
 -- metadata request url -> {pid=key, kind}, for on_http_response
 local pending_requests = {}
+
+-- ==========================================
+-- Local identity - who's actually running the client, read from
+-- Hebnix's own launch log instead of trusting anything the plugin
+-- could otherwise be told. Used to auto-fill "own id" fields and to
+-- lock CDN uploads to the account actually playing.
+-- ==========================================
+
+local local_epic_id = nil
+local last_identity_check = 0
+
+local function refresh_local_identity()
+    if os.time() - last_identity_check < 5 then return end
+    last_identity_check = os.time()
+
+    local log = hebnix.parse_launch_log(false)
+    local session = log and log.session
+    if type(session) ~= "table" then return end
+
+    local primary_id = session.primary_id and string.lower(tostring(session.primary_id)) or ""
+    if primary_id:match("^epic|") then
+        local_epic_id = primary_id:match("^epic|([^|]+)")
+    elseif session.epic_id and tostring(session.epic_id) ~= "" then
+        local_epic_id = string.lower(tostring(session.epic_id))
+    end
+end
+
+-- ==========================================
+-- CDN avatar uploads (pubapi.hebnix.com) - lets epic players, who have
+-- no public avatar api, contribute their own avatar to a shared CDN
+-- other clients can look up. Locked to local_epic_id so this can only
+-- ever upload the account actually running the client - overrides.json
+-- (below) stays the place for setting anyone else's avatar. Uses
+-- hebnix.http_multipart_post_async, which sends the file as raw bytes
+-- (not base64), so this costs exactly the file's own size on the wire.
+-- ==========================================
+
+local CDN_UPLOAD_URL = "https://pubapi.hebnix.com/rocket-profiles/upload"
+
+-- req_id -> platform_id, for on_http_upload_response
+local pending_uploads = {}
+-- platform_id -> "uploading" | "ok" | "error: ..." for the settings ui
+local upload_status = {}
+
+-- image_path may be given relative to the plugin dir (e.g.
+-- "assets/me.png", matching how overrides are entered) or already
+-- absolute - http_multipart_post_async reads straight off disk so it
+-- needs a real filesystem path either way.
+local function resolve_asset_path(path)
+    if path:match("^%a:[\\/]") or path:match("^[\\/]") then return path end
+    return PLUGIN_DIR .. "/" .. path
+end
+
+function plugin.upload_profile_image(image_path)
+    if not local_epic_id or image_path == "" then return end
+    local abs_path = resolve_asset_path(image_path)
+    local req_id = "cdn_upload:" .. local_epic_id .. ":" .. tostring(os.time())
+    pending_uploads[req_id] = local_epic_id
+    upload_status[local_epic_id] = "uploading"
+    hebnix.http_multipart_post_async(
+        req_id,
+        CDN_UPLOAD_URL,
+        { platform_id = local_epic_id },
+        { image = abs_path },
+        {}
+    )
+end
+
+function plugin.on_http_upload_response(req_id, status, body)
+    local platform_id = pending_uploads[req_id]
+    if not platform_id then return end
+    pending_uploads[req_id] = nil
+
+    if status == 200 then
+        upload_status[platform_id] = "ok"
+        hebnix.log("PfpOverlayV2: CDN upload for " .. platform_id .. " succeeded")
+    else
+        upload_status[platform_id] = "error: http " .. tostring(status)
+        hebnix.log("PfpOverlayV2: CDN upload for " .. platform_id .. " failed, status=" ..
+            tostring(status) .. " body=" .. tostring(body):sub(1, 500))
+    end
+end
 
 -- ==========================================
 -- Manual per-platform fetching, from v1 - only used when a platform's
@@ -798,8 +899,14 @@ local capturing_bind = false
 local scoreboard_held = false
 local scoreboard_capturing_bind = false
 
+-- bumped each time "use own id" forces a fresh value into the override
+-- id text_input (see on_settings)
+local override_id_gen = 0
+
 function plugin.on_tick()
     poll_tracker_results()
+    refresh_local_identity()
+    refresh_detected_ui_scale()
 
     local bind = hebnix.get_string("overlay_toggle_bind", "")
     if bind ~= "" then
@@ -962,9 +1069,8 @@ end
 -- ==========================================
 
 function plugin.on_settings(ui)
-    ui.heading("pfp overlay v2")
-    ui.label("shows player avatars on the scoreboard and goal replay nameplate.")
-    ui.label("avatars come from tracker.gg automatically, no api keys needed.")
+    ui.label("Shows player avatars on the scoreboard and goal replay nameplate.")
+    ui.label("Avatars come from tracker.gg automatically, no api keys needed.")
 
     -- ==========================================
     -- quick start - the stuff you need to set up first
@@ -975,13 +1081,23 @@ function plugin.on_settings(ui)
 
     ui.space(4)
     ui.heading("Interface scale")
-    ui.label("set this to match RL's own options > video > interface scale,")
-    ui.label("or the profiles will render in the wrong spot.")
-    ui.text_input("rl_ui_scale", "RL interface scale", tostring(REFERENCE_UI_SCALE))
+    ui.label("Must match RL's own options > video > interface scale, or the")
+    ui.label("profiles will render in the wrong spot.")
+    local ui_scale_auto_detect = ui.checkbox("ui_scale_auto_detect",
+        "auto-detect from RL's own save file (recommended)", true)
+    if ui_scale_auto_detect then
+        if detected_ui_scale then
+            ui.label("detected: " .. tostring(detected_ui_scale))
+        else
+            ui.colored_label("#d35400", "couldn't read interface scale from RL's save file yet.")
+        end
+    else
+        ui.text_input("rl_ui_scale", "RL interface scale", tostring(REFERENCE_UI_SCALE))
+    end
 
     ui.space(8)
     ui.heading("Scoreboard button")
-    ui.label("avatars only render at scoreboard positions while this is held.")
+    ui.label("Avatars only render at scoreboard positions while this is held.")
     local auto_detect = ui.checkbox("scoreboard_auto_detect",
         "auto-detect from RL's own bindings (recommended)", true)
     if auto_detect then
@@ -1018,9 +1134,9 @@ function plugin.on_settings(ui)
     ui.space(8)
     ui.heading("Avatar overrides")
     ui.label("Force a specific image for one player, by platform + id. handy")
-    ui.label("for switch (no avatar api at all) or anyone tracker.gg doesn't")
-    ui.label("have a picture for. Drop the image in the assets folder first,")
-    ui.label("then reference it below as assets/name.png.")
+    ui.label("for anyone tracker.gg doesn't have a picture for. Drop the")
+    ui.label("image in the assets folder first, then reference it below as")
+    ui.label("assets/name.png.")
 
     if ui.button("open assets folder") then
         hebnix.settings.open_assets()
@@ -1028,8 +1144,22 @@ function plugin.on_settings(ui)
 
     ui.space(4)
     local override_platform = ui.combo_box("override_add_platform", "platform",
-        { "steam", "xboxone", "epic", "psn", "switch" })
-    local override_id = ui.text_input("override_add_id", "player id (steamid64 / gamertag / etc)")
+        { "steam", "xboxone", "epic", "psn" })
+
+    -- ui.text_input's displayed value lives on the host side, keyed by
+    -- name - the only way to force a fresh value into it from lua is to
+    -- give it a key it hasn't seen before, which pulls the value we just
+    -- wrote instead of whatever the widget already has buffered.
+    local override_id_key = "override_add_id_" .. tostring(override_id_gen)
+    local override_id = ui.text_input(override_id_key, "player id (steamid64 / gamertag / etc)")
+    ui.horizontal(function()
+        if override_platform == "epic" and local_epic_id then
+            if ui.button("use own id") then
+                override_id_gen = override_id_gen + 1
+                hebnix.set("override_add_id_" .. tostring(override_id_gen), local_epic_id)
+            end
+        end
+    end)
     local override_path = ui.text_input("override_add_path", "image path, e.g. assets/me.png")
 
     if ui.button("add / update override") then
@@ -1068,6 +1198,39 @@ function plugin.on_settings(ui)
         hebnix.open_url(OVERRIDES_PATH)
     end
     ui.label(OVERRIDES_PATH)
+
+    -- ==========================================
+    -- CDN avatar upload (test) - contributes an avatar to
+    -- pubapi.hebnix.com so other epic players' clients can look it up.
+    -- Always uses local_epic_id, never a typed-in id - the only account
+    -- this can ever upload for is whichever one is actually running the
+    -- client.
+    -- ==========================================
+
+    ui.space(12)
+    ui.heading("CDN avatar upload (test)")
+    ui.label("Contributes your avatar to the shared CDN, for epic players -")
+    ui.label("epic has no lookup api of its own, so this is the only way")
+    ui.label("other clients can show a picture for you.")
+
+    if local_epic_id then
+        ui.label("detected epic id: " .. local_epic_id)
+    else
+        ui.colored_label("#aaaaaa", "no epic id detected - only available while playing on epic")
+    end
+
+    local cdn_upload_path = ui.text_input("cdn_upload_path", "image path, e.g. assets/me.png")
+
+    if local_epic_id and ui.button("upload to CDN") then
+        local path = cdn_upload_path:match("^%s*(.-)%s*$")
+        if path ~= "" then
+            plugin.upload_profile_image(path)
+        end
+    end
+
+    if local_epic_id and upload_status[local_epic_id] then
+        ui.label("status: " .. upload_status[local_epic_id])
+    end
 
     -- ==========================================
     -- fetching - api keys, priority, manual test
@@ -1110,7 +1273,7 @@ function plugin.on_settings(ui)
     ui.label("Pick a platform + fetch method, type an id, and try it - also")
     ui.label("adds a temporary entry to the tracked players list below.")
     local test_platform = ui.combo_box("test_platform", "platform",
-        { "steam", "xboxone", "epic", "psn", "switch" })
+        { "steam", "xboxone", "epic", "psn" })
     local test_mode = ui.combo_box("test_mode", "fetch via", { "tracker", "manual" })
     local test_identifier = ui.text_input("test_identifier", "steamid64 / gamertag / username / etc")
 
