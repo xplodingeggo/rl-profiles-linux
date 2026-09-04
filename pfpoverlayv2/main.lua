@@ -86,19 +86,28 @@ local BOX_SIZE = 48
 local SLOT_X = 714
 
 -- Interface Scale, read straight from the .save profile (GameplaySettingsSave_TA.UIScale)
--- instead of asking the user to type it in. Refreshed on a timer since
--- reading + parsing the save file isn't free enough to do every frame.
+-- instead of asking the user to type it in. Refreshed on a timer via the
+-- non-blocking save_summary_async - decrypt + parse is real work, doing it
+-- synchronously on the ui thread every 5s was stalling the whole app.
 local detected_ui_scale = nil
 local last_ui_scale_check = 0
+local ui_scale_pending_key = nil
 
 local function refresh_detected_ui_scale()
+    if ui_scale_pending_key then
+        local summary = hebnix.save_summary_result(ui_scale_pending_key)
+        if summary == nil or summary == "pending" then return end
+        ui_scale_pending_key = nil
+        if summary.ui_scale and summary.ui_scale > 0 then
+            detected_ui_scale = summary.ui_scale
+        end
+        return
+    end
+
     if os.time() - last_ui_scale_check < 5 then return end
     last_ui_scale_check = os.time()
-
-    local summary = hebnix.load_save_summary()
-    if summary and summary.ui_scale and summary.ui_scale > 0 then
-        detected_ui_scale = summary.ui_scale
-    end
+    hebnix.clear_save_summary_cache()
+    ui_scale_pending_key = hebnix.load_save_summary_async()
 end
 
 local function ui_scale()
@@ -296,21 +305,28 @@ local pending_requests = {}
 
 local local_epic_id = nil
 local last_identity_check = 0
+local identity_pending_key = nil
 
 local function refresh_local_identity()
+    if identity_pending_key then
+        local log = hebnix.launch_log_result(identity_pending_key)
+        if log == nil or log == "pending" then return end
+        identity_pending_key = nil
+        local session = log and log.session
+        if type(session) ~= "table" then return end
+        local primary_id = session.primary_id and string.lower(tostring(session.primary_id)) or ""
+        if primary_id:match("^epic|") then
+            local_epic_id = primary_id:match("^epic|([^|]+)")
+        elseif session.epic_id and tostring(session.epic_id) ~= "" then
+            local_epic_id = string.lower(tostring(session.epic_id))
+        end
+        return
+    end
+
     if os.time() - last_identity_check < 5 then return end
     last_identity_check = os.time()
-
-    local log = hebnix.parse_launch_log(false)
-    local session = log and log.session
-    if type(session) ~= "table" then return end
-
-    local primary_id = session.primary_id and string.lower(tostring(session.primary_id)) or ""
-    if primary_id:match("^epic|") then
-        local_epic_id = primary_id:match("^epic|([^|]+)")
-    elseif session.epic_id and tostring(session.epic_id) ~= "" then
-        local_epic_id = string.lower(tostring(session.epic_id))
-    end
+    hebnix.clear_launch_log()
+    identity_pending_key = hebnix.parse_launch_log_async(false)
 end
 
 -- ==========================================
@@ -324,6 +340,7 @@ end
 -- ==========================================
 
 local CDN_UPLOAD_URL = "https://pubapi.hebnix.com/rocket-profiles/upload"
+local CDN_LOOKUP_URL = "https://pubapi.hebnix.com/rocket-profiles/images"
 
 -- req_id -> platform_id, for on_http_upload_response
 local pending_uploads = {}
@@ -359,13 +376,99 @@ function plugin.on_http_upload_response(req_id, status, body)
     if not platform_id then return end
     pending_uploads[req_id] = nil
 
-    if status == 200 then
+    if status == 200 or status == 201 then
         upload_status[platform_id] = "ok"
-        hebnix.log("PfpOverlayV2: CDN upload for " .. platform_id .. " succeeded")
+        local ok, data = pcall(hebnix.json_decode, body)
+        local image_url = (ok and type(data) == "table") and data.image or nil
+        hebnix.log("PfpOverlayV2: CDN upload for " .. platform_id .. " succeeded" ..
+            (image_url and (" -> " .. image_url) or ""))
     else
         upload_status[platform_id] = "error: http " .. tostring(status)
         hebnix.log("PfpOverlayV2: CDN upload for " .. platform_id .. " failed, status=" ..
             tostring(status) .. " body=" .. tostring(body):sub(1, 500))
+    end
+end
+
+-- CDN lookup - batched, since the api takes a list of platform_ids in one
+-- call rather than one request per player. epic players land here (see
+-- process_tracker_stats) queued up; a periodic flush (on_tick) fires one
+-- POST per batch instead of one per player.
+local CDN_LOOKUP_REQ_ID = "cdn_lookup"
+local pending_epic_lookups = {} -- platform_id -> player key, queued since the last flush
+local epic_lookups_in_flight = nil -- platform_id -> player key, sent but no response yet
+
+local function flush_epic_lookups()
+    if epic_lookups_in_flight or next(pending_epic_lookups) == nil then return end
+
+    -- move (not copy) so anything queued after this point while the
+    -- request is in flight starts a fresh batch on the next flush,
+    -- instead of getting swept into this response's accounting
+    epic_lookups_in_flight = pending_epic_lookups
+    pending_epic_lookups = {}
+
+    local ids = {}
+    for platform_id in pairs(epic_lookups_in_flight) do
+        table.insert(ids, platform_id)
+    end
+
+    local body = hebnix.json_encode({ platform_ids = ids })
+    hebnix.log("PfpOverlayV2: CDN lookup request body=" .. tostring(body))
+    hebnix.http_post_async(CDN_LOOKUP_REQ_ID, CDN_LOOKUP_URL, body,
+        { ["Content-Type"] = "application/json" })
+end
+
+-- pubapi's own json responses (both /upload and /images) return image urls
+-- shaped ".../rocket-profiles/files/<name>", but the file is actually
+-- served at ".../files/rocket-profiles/<name>" (segments swapped) -
+-- confirmed against a real working link. server-side inconsistency in
+-- their response, not ours; this just corrects it before downloading.
+local function fix_cdn_image_url(url)
+    return (url:gsub("/rocket%-profiles/files/", "/files/rocket-profiles/"))
+end
+
+local function handle_cdn_lookup_response(status, body)
+    local requested = epic_lookups_in_flight or {}
+    epic_lookups_in_flight = nil
+
+    hebnix.log("PfpOverlayV2: CDN lookup response status=" .. tostring(status) ..
+        " body=" .. tostring(body):sub(1, 1000))
+
+    if status ~= 200 then
+        for platform_id, key in pairs(requested) do
+            local p = players[key]
+            if p and p.status ~= "override" then
+                p.status = "no avatar available (cdn lookup failed)"
+            end
+        end
+        return
+    end
+
+    local ok, data = pcall(hebnix.json_decode, body)
+    if not ok then
+        hebnix.log("PfpOverlayV2: CDN lookup response failed to json_decode: " .. tostring(data))
+    end
+    local images = (ok and type(data) == "table") and data.images or {}
+    local found = {}
+    for _, entry in ipairs(images) do
+        local key = requested[entry.platform_id]
+        if key then
+            found[entry.platform_id] = true
+            local p = players[key]
+            if p and p.status ~= "override" then
+                local image_url = fix_cdn_image_url(entry.image)
+                p.avatar_url = image_url
+                start_avatar_download(key, image_url, "cdn")
+            end
+        end
+    end
+
+    for platform_id, key in pairs(requested) do
+        if not found[platform_id] then
+            local p = players[key]
+            if p and p.status ~= "override" then
+                p.status = "no avatar available (not on cdn)"
+            end
+        end
     end
 end
 
@@ -631,6 +734,10 @@ function plugin.on_http_response(url, status, body)
         handle_psn_token_response(status, body, url == "psn_token_bootstrap")
         return
     end
+    if url == CDN_LOOKUP_REQ_ID then
+        handle_cdn_lookup_response(status, body)
+        return
+    end
     local req = pending_requests[url]
     if not req then return end
     pending_requests[url] = nil
@@ -681,11 +788,16 @@ local function process_tracker_stats(key, stats)
     if not p or p.status == "override" then return end
     if stats.error then
         p.status = "tracker error: " .. tostring(stats.error)
-    elseif stats.not_found then
+    elseif stats.not_found and p.platform ~= "epic" then
         p.status = "tracker: profile not found"
     elseif stats.avatar_url and stats.avatar_url ~= "" then
         p.avatar_url = stats.avatar_url
         start_avatar_download(key, stats.avatar_url, "tracker")
+    elseif p.platform == "epic" then
+        -- tracker.gg has no epic avatars at all, so this (not just
+        -- not_found) is the common case for epic players
+        pending_epic_lookups[p.platform_id] = key
+        p.status = "checking cdn for avatar"
     else
         p.status = "no avatar available (tracker.gg has none for this profile)"
     end
@@ -778,6 +890,8 @@ local function clear_players()
     pending_tracker = {}
     pending_requests = {}
     download_requests = {}
+    pending_epic_lookups = {}
+    epic_lookups_in_flight = nil
     last_goal = nil
     is_replay = false
 end
@@ -907,6 +1021,7 @@ function plugin.on_tick()
     poll_tracker_results()
     refresh_local_identity()
     refresh_detected_ui_scale()
+    flush_epic_lookups()
 
     local bind = hebnix.get_string("overlay_toggle_bind", "")
     if bind ~= "" then
@@ -1105,7 +1220,13 @@ function plugin.on_settings(ui)
         if #detected == 0 then
             ui.colored_label("#d35400", "no scoreboard bind found in your RL settings yet.")
         else
-            ui.label("detected: " .. table.concat(detected, ", "))
+            ui.horizontal(function()
+                ui.label("detected:")
+                for _, b in ipairs(detected) do
+                    ui.bind_icon(b, {height = 20})
+                    ui.label(b .. " " .. hebnix.bind_type_label(b))
+                end
+            end)
         end
         if ui.button("refresh from RL settings") then
             hebnix.refresh_action_binds()
@@ -1116,6 +1237,10 @@ function plugin.on_settings(ui)
         local sb_bind = hebnix.get_string("scoreboard_button", "")
         ui.horizontal(function()
             ui.label("bind: " .. (sb_bind ~= "" and sb_bind or "(none set)"))
+            if sb_bind ~= "" then
+                ui.bind_icon(sb_bind, {height = 20})
+                ui.label(hebnix.bind_type_label(sb_bind))
+            end
             if scoreboard_capturing_bind then
                 ui.colored_label("#d35400", "press any key/button...")
             else
@@ -1274,7 +1399,7 @@ function plugin.on_settings(ui)
     ui.label("adds a temporary entry to the tracked players list below.")
     local test_platform = ui.combo_box("test_platform", "platform",
         { "steam", "xboxone", "epic", "psn" })
-    local test_mode = ui.combo_box("test_mode", "fetch via", { "tracker", "manual" })
+    local test_mode = ui.combo_box("test_mode", "fetch via", { "tracker", "manual", "cdn" })
     local test_identifier = ui.text_input("test_identifier", "steamid64 / gamertag / username / etc")
 
     if ui.button("test fetch avatar") then
@@ -1304,6 +1429,10 @@ function plugin.on_settings(ui)
                 else
                     p.status = "no manual method for " .. test_platform
                 end
+            elseif test_mode == "cdn" then
+                pending_epic_lookups[identifier] = key
+                p.status = "checking cdn for avatar"
+                flush_epic_lookups()
             else
                 local stats_key = hebnix.fetch_profile_async(test_platform, identifier)
                 if stats_key then
@@ -1372,6 +1501,10 @@ function plugin.on_settings(ui)
     local bind = hebnix.get_string("overlay_toggle_bind", "")
     ui.horizontal(function()
         ui.label("toggle bind: " .. (bind ~= "" and bind or "(none — always visible)"))
+        if bind ~= "" then
+            ui.bind_icon(bind, {height = 20})
+            ui.label(hebnix.bind_type_label(bind))
+        end
         if capturing_bind then
             ui.colored_label("#d35400", "press any key/button...")
         else
