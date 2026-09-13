@@ -1,12 +1,10 @@
 -- PfpOverlayV2: profile pictures on the scoreboard + goal replay nameplate.
--- Same layout/rendering as v1, but avatars are resolved through Hebnix's
--- built-in tracker.gg lookup by default instead of our own Steam/Xbox/PSN
--- calls. No keys or PSN login required unless manual mode is picked per
+-- No keys or PSN login required unless manual mode is picked per
 -- platform (see settings). v1 stays untouched as a fallback plugin.
 --
 -- Note: draw.image (scoreboard/nameplate rendering) only reads local
 -- files, not urls - only ui.image (settings widgets) can load a url
--- directly. So even a tracker.gg avatar still gets downloaded to
+-- directly. So even a hebnix-resolved avatar still gets downloaded to
 -- assets/cache/ ourselves before it can be drawn on screen.
 
 local plugin = {}
@@ -61,17 +59,44 @@ local function load_overrides()
     return {}
 end
 
--- "tracker" (default) or "manual". epic has no manual method, so it
--- always goes through tracker.gg.
+-- "hebnix" (default) or "manual". epic has no manual method, so it
+-- always goes through hebnix.
 local function platform_priority(platform)
-    if platform == "steam" then return hebnix.get_string("priority_steam", "tracker") end
-    if platform:find("xbox") then return hebnix.get_string("priority_xboxone", "tracker") end
-    if platform:find("ps") then return hebnix.get_string("priority_psn", "tracker") end
-    return "tracker"
+    if platform == "steam" then return hebnix.get_string("priority_steam", "hebnix") end
+    if platform:find("xbox") then return hebnix.get_string("priority_xboxone", "hebnix") end
+    if platform:find("ps") then return hebnix.get_string("priority_psn", "hebnix") end
+    return "hebnix"
 end
 
 local function steam_api_key() return hebnix.get_string("steam_api_key", "") end
 local function xbox_api_key() return hebnix.get_string("xbox_api_key", "") end
+
+-- ==========================================
+-- Match/mutator-strip state, ported from the PlatformDisplay example
+-- plugin (examples/plugins/PlatformDisplay/main.lua, sb_layout) so the
+-- scoreboard slots below can react to the same things that plugin does:
+-- the mutator strip covering the right edge in tournament playlists,
+-- the board shifting during goal replays, and the first tab-open after
+-- a match starts landing a few pixels off from every later one.
+-- Declared up here (ahead of "Player tracking") since get_scoreboard_slots
+-- closes over is_replay/in_first_open/shows_mutator_strip - refresh_match_
+-- playlist, which needs player_order, is defined down in that section.
+-- ==========================================
+
+local is_replay = false
+local TOURNAMENT_PLAYLIST = 34
+local current_playlist = nil
+local mutators = {}
+local mutator_count = 0
+local match_log_key = nil
+local first_tab_pending = true
+local in_first_open = false
+local scoreboard_was_held = false
+
+local function shows_mutator_strip()
+    if current_playlist == TOURNAMENT_PLAYLIST then return true end
+    return mutator_count > 0
+end
 
 -- ==========================================
 -- Layout (identical to PfpOverlay v1 - ported from the Python
@@ -134,18 +159,15 @@ local SCOREBOARD_UI_QUAD = {
 }
 local ROW_HEIGHT_QUAD = { 88.0, -86.0, 72.0 }
 
+-- orange no longer uses this table - its correction is now the measured,
+-- team-size-independent orange_row0_extra_y() formula below instead (see
+-- its comment for why the old per-size orange entries here were wrong).
 local EXTRA_Y_QUAD = {
     blue = {
         [1] = { -144.0, 180.0, -54.0 },
         [2] = { -304.0, 380.0, -114.0 },
         [3] = { 483.83838383838383, -1552.6363636363637, 1366.2373737373737, -355.43939393939394 },
         [4] = { -256.0, 320.0, -96.0 },
-    },
-    orange = {
-        [1] = { 192.0, -240.0, 72.0 },
-        [2] = { 232.0, -290.0, 87.0 },
-        [3] = { 240.0, -300.0, 90.0 },
-        [4] = { 216.0, -270.0, 81.0 },
     },
 }
 local EXTRA_X_NUDGE = {
@@ -158,6 +180,14 @@ local function quad(coefs, s)
         result = result * s + c
     end
     return result
+end
+
+-- Shared shape: any k*(s-0.75)*(s-1.0) is exactly 0 at both independently-
+-- confirmed-correct scales (0.75 and 1.0) no matter what k is, so every
+-- baked correction built from it is safe by construction at those two
+-- scales - only k (derived from one real measurement) differs per use.
+local function scale_correction(k, s)
+    return k * (s - REFERENCE_UI_SCALE) * (s - 1.0)
 end
 
 local function round_up(value)
@@ -181,22 +211,146 @@ local function scale_slot(x, y, w, h, ui_quad, screen_w, screen_h)
         math.max(1, round_up(w * res_scale_x)), math.max(1, round_up(h * res_scale_y))
 end
 
+-- Row spacing (ROW_HEIGHT_QUAD) has the same problem row_0 did: it's an
+-- absolute value (not a zero-baseline correction), so it can't have a
+-- "safe" root the way the row_0 offsets do - it was just never verified
+-- below its 0.75-1.0 fitting range. Measured at 50% (2v2, confirmed exact
+-- via slider): row_height(0.5) needs to be 13 smaller than the raw quad()
+-- gives (51 -> 38). Applying that as a scale_correction() on top keeps
+-- 0.75/1.0 exactly unchanged and interpolates smoothly for everything in
+-- between/around, same pattern as the row_0 fixes.
+local ROW_HEIGHT_CORRECTION_K = -104.0
+
 local function scaled_row_height()
-    return quad(ROW_HEIGHT_QUAD, ui_scale())
+    local s = ui_scale()
+    local baked = scale_correction(ROW_HEIGHT_CORRECTION_K, s)
+    local manual = hebnix.get_number("scoreboard_row_height_nudge", 0)
+    return quad(ROW_HEIGHT_QUAD, s) + baked + manual
 end
 
-local function get_scoreboard_slots(team_size, screen_w, screen_h)
+-- Fine-tuning nudges for cases the SCOREBOARD_LAYOUTS/EXTRA_Y_QUAD tables
+-- don't cover on their own, ported from how the PlatformDisplay example
+-- plugin's sb_layout keeps its icons aligned in the same situations:
+-- the mutator strip covering the right edge (tournament playlists), the
+-- board shifting during goal replays, the first tab-open after a match
+-- starts landing a few pixels off from later ones, and one team having
+-- more players than the other. All default to 0 (today's behaviour) -
+-- tune them live in a match, they're plain screen-quad units like the
+-- other sliders below.
+local function scoreboard_x_nudge()
+    local nudge = 0
+    if shows_mutator_strip() then
+        nudge = nudge + hebnix.get_number("scoreboard_x_nudge_mutator", 0)
+    end
+    if is_replay then
+        nudge = nudge + hebnix.get_number("scoreboard_x_nudge_replay", 0)
+    end
+    if in_first_open then
+        nudge = nudge + hebnix.get_number("scoreboard_x_nudge_first_open", 0)
+    end
+    return nudge
+end
+
+-- EXTRA_Y_QUAD.orange used to be a per-team-size correction built on a
+-- guessed shape (assumed root at s=0.5, assumed proportional-to-size
+-- scaling) that turned out wrong on both counts. It's genuinely per-size,
+-- just not the way the old table assumed - orange needed -69/-68/-67ish
+-- at 1v1/2v2/3v3 (a few px apart, not proportional to size at all), and
+-- blue is -1 at 2v2, -23 at 1v1, +20 at 3v3, and +87 at 4v4 (team-size
+-- dependence is real and large for blue, much smaller for orange). Both
+-- teams/axes share the same safe shape - k*(s-0.75)*(s-1.0), exactly 0 at
+-- the two independently-confirmed-correct scales no matter what k is -
+-- just with a k measured per team size instead of one guessed/averaged
+-- constant. Blue's X at 4v4 hasn't been measured yet (defaults to 0).
+local ROW0_EXTRA_Y_K = {
+    orange = { [1] = -552.0, [2] = -544.0, [3] = -532.6666664, [4] = -568.0 },
+    blue = { [1] = -184.0, [2] = -8.0, [3] = 160.0, [4] = 696.0 },
+}
+local ROW0_EXTRA_X_K = {
+    blue = { [1] = -8.0, [2] = -8.0 },
+}
+
+local function row0_extra(table_by_team, team, team_size, s)
+    local by_size = table_by_team[team]
+    local k = by_size and by_size[team_size]
+    if not k then return 0 end
+    return scale_correction(k, s)
+end
+
+local ROW0_Y_NUDGE_SETTING = {
+    blue = "scoreboard_blue_y_nudge_midscale",
+    orange = "scoreboard_orange_y_nudge_midscale",
+}
+local ROW0_X_NUDGE_SETTING = {
+    blue = "scoreboard_blue_x_nudge_midscale",
+    orange = "scoreboard_orange_x_nudge_midscale",
+}
+
+-- scale_correction()'s curve is 0 at exactly 0.75 by construction, but
+-- that assumption turned out imperfect too: at 75% specifically (not the
+-- 50-100% curve, a flat correction only at this one exact scale), orange
+-- row_0 Y needs +1 at 1v1/2v2/3v3, and blue row_0 X needs +1 at 3v3 only.
+-- Applied as a separate discrete override on top of the curve rather than
+-- folded into it, since it's scoped to one exact scale value, not a shape.
+local ROW0_AT_REFERENCE_Y = {
+    orange = { [1] = 1, [2] = 1, [3] = 1 },
+}
+local ROW0_AT_REFERENCE_X = {
+    blue = { [3] = 1 },
+    orange = { [3] = 1 },
+}
+
+local function row0_at_reference(table_by_team, team, team_size, s)
+    if s ~= REFERENCE_UI_SCALE then return 0 end
+    local by_size = table_by_team[team]
+    return (by_size and by_size[team_size]) or 0
+end
+
+local function row0_y_nudge(team, team_size)
+    local s = ui_scale()
+    local baked = row0_extra(ROW0_EXTRA_Y_K, team, team_size, s)
+        + row0_at_reference(ROW0_AT_REFERENCE_Y, team, team_size, s)
+    local manual = hebnix.get_number(ROW0_Y_NUDGE_SETTING[team], 0)
+    return baked + manual
+end
+
+local function row0_x_nudge(team, team_size)
+    local s = ui_scale()
+    local baked = row0_extra(ROW0_EXTRA_X_K, team, team_size, s)
+        + row0_at_reference(ROW0_AT_REFERENCE_X, team, team_size, s)
+    local setting = ROW0_X_NUDGE_SETTING[team]
+    local manual = setting and hebnix.get_number(setting, 0) or 0
+    return baked + manual
+end
+
+local function get_scoreboard_slots(team_size, other_size, screen_w, screen_h)
     team_size = math.max(1, math.min(4, team_size))
     local layout = SCOREBOARD_LAYOUTS[team_size]
     local row_height = scaled_row_height()
+    local x_nudge = scoreboard_x_nudge()
+
+    -- same-size teams (the common case) get 0 here, matching today's
+    -- behaviour exactly - only an unequal match nudges both teams'
+    -- baseline by the same amount, same as sb_layout's shared cy shift.
+    local imbalance_unit = hebnix.get_number("scoreboard_imbalance_nudge", 0)
+    local imbalance_y = 0
+    if other_size and imbalance_unit ~= 0 then
+        local difference = team_size - other_size
+        local lopsided = (team_size == 0) ~= (other_size == 0)
+        local sign = difference >= 0 and 1 or -1
+        imbalance_y = imbalance_unit * (difference - (lopsided and sign or 0))
+    end
+
     local slots = {}
     for _, team in ipairs({ "blue", "orange" }) do
-        local row0_x = SLOT_X + ((EXTRA_X_NUDGE[team] or {})[team_size] or 0)
-        local row0_y = layout[team]
+        local row0_x = SLOT_X + x_nudge + ((EXTRA_X_NUDGE[team] or {})[team_size] or 0)
+            + row0_x_nudge(team, team_size)
+        local row0_y = layout[team] + imbalance_y
         local extra_y = (EXTRA_Y_QUAD[team] or {})[team_size]
         if extra_y then
             row0_y = row0_y + quad(extra_y, ui_scale())
         end
+        row0_y = row0_y + row0_y_nudge(team, team_size)
         for row = 0, team_size - 1 do
             local x, y, w, h = scale_slot(row0_x, row0_y + row * row_height, BOX_SIZE, BOX_SIZE,
                 SCOREBOARD_UI_QUAD, screen_w, screen_h)
@@ -231,9 +385,25 @@ local players = {}
 local player_order = {}
 local seen = {}
 local pending_tracker = {} -- key -> true, players awaiting a hebnix.stats_result
+local next_insertion_index = 0 -- see track_player: gives every player a unique,
+    -- permanent join-order number, used as the final scoreboard tie-break
 
 local last_goal = nil -- { scorer_name, scorer_key, timestamp } or nil
-local is_replay = false
+
+local function refresh_match_playlist()
+    if current_playlist or #player_order == 0 then return end
+    if not match_log_key then
+        match_log_key = hebnix.parse_launch_log_async(false)
+        return
+    end
+    local info = hebnix.launch_log_result(match_log_key)
+    if type(info) ~= "table" then return end
+    match_log_key = nil
+    if type(info.game) ~= "table" then return end
+    current_playlist = tonumber(info.game.playlist_id)
+    mutators = info.game.mutators or {}
+    mutator_count = math.max(tonumber(info.game.mutator_count) or 0, #mutators)
+end
 
 local function parse_platform(pid)
     local platform, id_part = pid:match("^([^|]+)|([^|]+)")
@@ -249,7 +419,7 @@ local function player_key(pid, name)
 end
 
 -- ==========================================
--- Avatar resolution via Hebnix's built-in tracker.gg integration
+-- Avatar resolution via Hebnix's built-in avatar-lookup integration
 -- ==========================================
 
 -- Only [%w_.-] survive filesystem-safely on Windows.
@@ -280,7 +450,7 @@ local function detect_image_ext(url, body)
 end
 
 -- avatar url -> {key, source}, for on_http_download_response. source
--- ("tracker" or "manual") keeps the two saved as separate files, so
+-- ("hebnix" or "manual") keeps the two saved as separate files, so
 -- switching fetch mode always shows the right one instead of one
 -- silently overwriting the other's cached file on disk.
 local download_requests = {}
@@ -787,19 +957,21 @@ local function process_tracker_stats(key, stats)
     local p = players[key]
     if not p or p.status == "override" then return end
     if stats.error then
-        p.status = "tracker error: " .. tostring(stats.error)
+        p.status = "hebnix error: " .. tostring(stats.error)
     elseif stats.not_found and p.platform ~= "epic" then
-        p.status = "tracker: profile not found"
+        p.status = "hebnix: profile not found"
     elseif stats.avatar_url and stats.avatar_url ~= "" then
         p.avatar_url = stats.avatar_url
-        start_avatar_download(key, stats.avatar_url, "tracker")
+        start_avatar_download(key, stats.avatar_url, "hebnix")
     elseif p.platform == "epic" then
-        -- tracker.gg has no epic avatars at all, so this (not just
-        -- not_found) is the common case for epic players
+        -- hebnix has no epic avatars at all, so this (not just
+        -- not_found) is the common case for epic players - falls
+        -- through to the CDN lookup automatically, same "hebnix"
+        -- fetch mode covers both.
         pending_epic_lookups[p.platform_id] = key
         p.status = "checking cdn for avatar"
     else
-        p.status = "no avatar available (tracker.gg has none for this profile)"
+        p.status = "no avatar available (hebnix has none for this profile)"
     end
 end
 
@@ -844,12 +1016,12 @@ local function resolve_avatar(key)
             return
         end
         hebnix.log("PfpOverlayV2: manual fetch prioritized for " .. p.platform ..
-            " but no key/npsso configured, falling back to tracker.gg")
+            " but no key/npsso configured, falling back to hebnix")
     end
 
     hebnix.fetch_stats_async(p.raw_pid, p.name)
     pending_tracker[p.raw_pid] = key
-    p.status = "fetching (tracker.gg)"
+    p.status = "fetching (hebnix)"
 end
 
 function plugin.on_http_download_response(url, status, body)
@@ -894,6 +1066,13 @@ local function clear_players()
     epic_lookups_in_flight = nil
     last_goal = nil
     is_replay = false
+    current_playlist = nil
+    mutators = {}
+    mutator_count = 0
+    match_log_key = nil
+    first_tab_pending = true
+    in_first_open = false
+    scoreboard_was_held = false
 end
 
 local function remove_player(key)
@@ -928,11 +1107,13 @@ local function track_player(pid, name, team_num, shortcut)
     seen[key] = true
     local is_bot = hebnix.is_bot(pid)
     local platform, platform_id = parse_platform(pid)
+    next_insertion_index = next_insertion_index + 1
     players[key] = {
         name = name, platform = platform, platform_id = platform_id, is_bot = is_bot,
         raw_pid = pid,
         avatar_path = nil, avatar_url = nil, status = is_bot and "bot (no avatar)" or "new",
         team_num = team_num or 0, score = 0, shortcut = shortcut or 0, disconnected = false,
+        insertion_index = next_insertion_index,
     }
     table.insert(player_order, key)
     if not is_bot then resolve_avatar(key) end
@@ -998,6 +1179,13 @@ function plugin.on_game_event(event_type, event)
         hebnix.log("PfpOverlayV2: GoalScored by " .. scorer_name .. " (matched key: " .. tostring(scorer_key) .. ")")
     elseif event_type == "GameLeft" or event_type == "MatchEnded" then
         clear_players()
+    elseif event_type == "MatchCreated" or event_type == "MatchInitialized" then
+        current_playlist = nil
+        mutators = {}
+        mutator_count = 0
+        match_log_key = nil
+        first_tab_pending = true
+        in_first_open = false
     end
 end
 
@@ -1058,6 +1246,15 @@ function plugin.on_tick()
             scoreboard_capturing_bind = false
         end
     end
+
+    refresh_match_playlist()
+    if scoreboard_held and not scoreboard_was_held then
+        in_first_open = first_tab_pending
+        first_tab_pending = false
+    elseif not scoreboard_held then
+        in_first_open = false
+    end
+    scoreboard_was_held = scoreboard_held
 end
 
 -- Returns each team's active (still-connected) roster, plus at most one
@@ -1079,11 +1276,23 @@ local function scoreboard_teams()
     end
     -- same order RL's own scoreboard uses: score descending, and when
     -- scores tie (usually 0-0 early in a match) it falls back to each
-    -- player's shortcut id, also descending.
+    -- player's shortcut id, also descending. But shortcut isn't guaranteed
+    -- unique (bots in particular likely never get a real one and all
+    -- default to 0), and when it ties too, Lua's table.sort is NOT stable
+    -- - two players judged fully equal by this comparator can silently
+    -- swap order from one frame to the next with no visible cause. That
+    -- matched a reported bug: correct at match start (before scores
+    -- diverge, so shortcut ties are rare) but occasionally wrong later
+    -- once two players re-converge on the same score. insertion_index is
+    -- always unique and never changes once assigned, so it's a safe final
+    -- tiebreaker that makes the sort fully deterministic every time.
     local function by_score_desc(a, b)
         local pa, pb = players[a], players[b]
         if pa.score ~= pb.score then return pa.score > pb.score end
-        return (pa.shortcut or 0) > (pb.shortcut or 0)
+        if (pa.shortcut or 0) ~= (pb.shortcut or 0) then
+            return (pa.shortcut or 0) > (pb.shortcut or 0)
+        end
+        return (pa.insertion_index or 0) < (pb.insertion_index or 0)
     end
     table.sort(blue, by_score_desc)
     table.sort(orange, by_score_desc)
@@ -1121,10 +1330,10 @@ end
 -- team next to a 2-player team (unfair exhibition modes, or a real
 -- match down to fewer active players) each get their own real layout
 -- instead of both being forced to match the bigger side.
-local function draw_team_avatars(draw, team_color, list, ghost, w, h)
+local function draw_team_avatars(draw, team_color, list, ghost, other_size, w, h)
     local size = #list
     if size > 0 then
-        for _, slot in ipairs(get_scoreboard_slots(size, w, h)) do
+        for _, slot in ipairs(get_scoreboard_slots(size, other_size, w, h)) do
             if slot.team == team_color then
                 local p = players[list[slot.row + 1]]
                 if p and p.avatar_path then
@@ -1137,7 +1346,7 @@ local function draw_team_avatars(draw, team_color, list, ghost, w, h)
         -- one row bigger than the active layout, at the new bottom row -
         -- e.g. a 2v2 that lost a player renders that team like a 3v3
         -- with the departed player pinned to row 3.
-        for _, slot in ipairs(get_scoreboard_slots(size + 1, w, h)) do
+        for _, slot in ipairs(get_scoreboard_slots(size + 1, other_size, w, h)) do
             if slot.team == team_color and slot.row == size then
                 local p = players[ghost]
                 if p.avatar_path then
@@ -1153,8 +1362,8 @@ local function draw_scoreboard_avatars(draw, w, h)
     local blue, orange, blue_ghost, orange_ghost = scoreboard_teams()
     if #blue == 0 and #orange == 0 and not blue_ghost and not orange_ghost then return end
 
-    draw_team_avatars(draw, "blue", blue, blue_ghost, w, h)
-    draw_team_avatars(draw, "orange", orange, orange_ghost, w, h)
+    draw_team_avatars(draw, "blue", blue, blue_ghost, #orange, w, h)
+    draw_team_avatars(draw, "orange", orange, orange_ghost, #blue, w, h)
 end
 
 local function draw_goal_nameplate(draw, w, h)
@@ -1185,7 +1394,7 @@ end
 
 function plugin.on_settings(ui)
     ui.label("Shows player avatars on the scoreboard and goal replay nameplate.")
-    ui.label("Avatars come from tracker.gg automatically, no api keys needed.")
+    ui.label("Avatars come from hebnix automatically, no api keys needed.")
 
     -- ==========================================
     -- quick start - the stuff you need to set up first
@@ -1259,7 +1468,7 @@ function plugin.on_settings(ui)
     ui.space(8)
     ui.heading("Avatar overrides")
     ui.label("Force a specific image for one player, by platform + id. handy")
-    ui.label("for anyone tracker.gg doesn't have a picture for. Drop the")
+    ui.label("for anyone hebnix doesn't have a picture for. Drop the")
     ui.label("image in the assets folder first, then reference it below as")
     ui.label("assets/name.png.")
 
@@ -1333,7 +1542,7 @@ function plugin.on_settings(ui)
     -- ==========================================
 
     ui.space(12)
-    ui.heading("CDN avatar upload (test)")
+    ui.heading("CDN avatar upload")
     ui.label("Contributes your avatar to the shared CDN, for epic players -")
     ui.label("epic has no lookup api of its own, so this is the only way")
     ui.label("other clients can show a picture for you.")
@@ -1363,22 +1572,22 @@ function plugin.on_settings(ui)
 
     ui.space(12)
     ui.heading("Fetching")
-    ui.label("Per platform, pick tracker.gg (default, no key needed) or")
+    ui.label("Per platform, pick hebnix (default, no key needed) or")
     ui.label("manual - this plugin's own key/psn-login pipeline from v1. if")
     ui.label("manual is picked but nothing's filled in, it just falls back")
-    ui.label("to tracker.gg for that platform.")
+    ui.label("to hebnix for that platform.")
 
     ui.space(4)
     ui.horizontal(function()
-        ui.combo_box("priority_steam", "steam priority", { "tracker", "manual" })
+        ui.combo_box("priority_steam", "steam priority", { "hebnix", "manual" })
         ui.text_input("steam_api_key", "steam web api key (steamcommunity.com/dev)", "")
     end)
     ui.horizontal(function()
-        ui.combo_box("priority_xboxone", "xbox priority", { "tracker", "manual" })
+        ui.combo_box("priority_xboxone", "xbox priority", { "hebnix", "manual" })
         ui.text_input("xbox_api_key", "xbox api key (xbl.io)", "")
     end)
     ui.horizontal(function()
-        ui.combo_box("priority_psn", "psn priority", { "tracker", "manual" })
+        ui.combo_box("priority_psn", "psn priority", { "hebnix", "manual" })
         ui.text_input("psn_npsso", "psn npsso", "")
     end)
     if psn_have_valid_access_token() then
@@ -1393,13 +1602,20 @@ function plugin.on_settings(ui)
     ui.label("https://ca.account.sony.com/api/v1/ssocookie and paste its")
     ui.label("\"npsso\" value above.")
 
+    ui.space(12)
+    ui.heading("Advanced / debug")
+    ui.colored_label("#aaaaaa", "Everything below is for troubleshooting and fine-tuning - most people can ignore it.")
+
     ui.space(8)
-    ui.heading("Test fetch")
+    ui.colored_label("#aaaaaa", "Test fetch")
     ui.label("Pick a platform + fetch method, type an id, and try it - also")
     ui.label("adds a temporary entry to the tracked players list below.")
     local test_platform = ui.combo_box("test_platform", "platform",
         { "steam", "xboxone", "epic", "psn" })
-    local test_mode = ui.combo_box("test_mode", "fetch via", { "tracker", "manual", "cdn" })
+    -- epic has no manual method and no direct cdn option here - "hebnix"
+    -- already falls through to the cdn lookup automatically for epic,
+    -- same as the real (non-test) fetch path does.
+    local test_mode = ui.combo_box("test_mode", "fetch via", { "hebnix", "manual" })
     local test_identifier = ui.text_input("test_identifier", "steamid64 / gamertag / username / etc")
 
     if ui.button("test fetch avatar") then
@@ -1429,15 +1645,11 @@ function plugin.on_settings(ui)
                 else
                     p.status = "no manual method for " .. test_platform
                 end
-            elseif test_mode == "cdn" then
-                pending_epic_lookups[identifier] = key
-                p.status = "checking cdn for avatar"
-                flush_epic_lookups()
             else
                 local stats_key = hebnix.fetch_profile_async(test_platform, identifier)
                 if stats_key then
                     pending_tracker[stats_key] = key
-                    p.status = "fetching (tracker.gg)"
+                    p.status = "fetching (hebnix)"
                 end
             end
         end
@@ -1459,7 +1671,7 @@ function plugin.on_settings(ui)
     -- ==========================================
 
     ui.space(12)
-    ui.heading("Tracked players")
+    ui.colored_label("#aaaaaa", "Tracked players")
     if ui.button("re-resolve all") then
         for _, pid in ipairs(player_order) do resolve_avatar(pid) end
     end
@@ -1495,7 +1707,7 @@ function plugin.on_settings(ui)
     -- ==========================================
 
     ui.space(12)
-    ui.heading("Debug overlay")
+    ui.colored_label("#aaaaaa", "Debug overlay")
     ui.label("An on-screen list of tracked players and their fetch status,")
     ui.label("for troubleshooting - not the scoreboard pfps themselves.")
     local bind = hebnix.get_string("overlay_toggle_bind", "")
@@ -1519,6 +1731,30 @@ function plugin.on_settings(ui)
         end
     end)
     ui.label("currently: " .. (overlay_visible and "visible" or "hidden"))
+
+    -- ==========================================
+    -- advanced alignment - nudges for cases the built-in layout doesn't
+    -- cover on its own. down here since it's rarely touched once set.
+    -- ==========================================
+
+    ui.space(12)
+    ui.colored_label("#aaaaaa", "Advanced alignment")
+    ui.label("Nudges for cases the built-in layout doesn't cover on its")
+    ui.label("own - mutator strip, replay board shift, first tab-open,")
+    ui.label("and uneven team sizes. All default to 0 (no change). Same")
+    ui.label("idea as PlatformDisplay's alignment sliders - tune live.")
+    ui.label("Mutators: " .. mutator_count
+        .. (#mutators > 0 and " (" .. table.concat(mutators, ", ") .. ")" or "")
+        .. (shows_mutator_strip() and ", strip shown" or ""))
+    ui.slider("scoreboard_x_nudge_mutator", "X nudge, mutator strip shown", -250, 250, 0)
+    ui.slider("scoreboard_x_nudge_replay", "X nudge, goal replay", -250, 250, 0)
+    ui.slider("scoreboard_x_nudge_first_open", "X nudge, first tab-open", -250, 250, 0)
+    ui.slider("scoreboard_imbalance_nudge", "Y nudge per player of team-size difference", -50, 50, 0)
+    ui.slider("scoreboard_orange_y_nudge_midscale", "Orange row 0 Y nudge", -150, 150, 0)
+    ui.slider("scoreboard_blue_y_nudge_midscale", "Blue row 0 Y nudge", -150, 150, 0)
+    ui.slider("scoreboard_blue_x_nudge_midscale", "Blue row 0 X nudge", -150, 150, 0)
+    ui.slider("scoreboard_orange_x_nudge_midscale", "Orange row 0 X nudge", -150, 150, 0)
+    ui.slider("scoreboard_row_height_nudge", "Row spacing nudge (row 1, row 2, ...)", -150, 150, 0)
 end
 
 function plugin.on_unload()

@@ -1,4 +1,5 @@
 name = "PfpOverlayV2"
 author = "xplodingeggo"
-version = "2.1.0"
+version = "2.2.0"
 entry = "main.lua"
+plugin_id = "701e6709abfb0a929266b03214da3094"
