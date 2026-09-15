@@ -1133,9 +1133,16 @@ end
 -- Callbacks
 -- ==========================================
 
+local avatar_assets = {}
+
+local function refresh_avatar_assets()
+    avatar_assets = hebnix.list_assets() or {}
+end
+
 function plugin.on_load()
     hebnix.log("PfpOverlayV2 loaded")
     hebnix.refresh_action_binds()
+    refresh_avatar_assets()
 end
 
 function plugin.on_game_event(event_type, event)
@@ -1465,8 +1472,53 @@ function plugin.on_settings(ui)
         end)
     end
 
-    ui.space(8)
-    ui.heading("Avatar overrides")
+    -- ==========================================
+    -- CDN avatar upload - contributes an avatar to pubapi.hebnix.com so
+    -- other epic players' clients can look it up. Always uses
+    -- local_epic_id, never a typed-in id - the only account this can
+    -- ever upload for is whichever one is actually running the client.
+    -- Picks the image from a dropdown of the assets folder's contents
+    -- instead of a free-typed path, so there's nothing to misspell.
+    -- ==========================================
+
+    ui.space(12)
+    ui.heading("Epic avatar uploading")
+    ui.label("Contributes your avatar to the shared CDN, for epic players -")
+    ui.label("epic has no lookup api of its own, so this is the only way")
+    ui.label("other clients can show a picture for you.")
+
+    if local_epic_id then
+        ui.label("detected epic id: " .. local_epic_id)
+    else
+        ui.colored_label("#aaaaaa", "no epic id detected - only available while playing on epic")
+    end
+
+    local cdn_upload_asset = ui.combo_box("cdn_upload_asset", "avatar image", avatar_assets)
+    ui.horizontal(function()
+        if ui.button("open assets folder") then
+            hebnix.settings.open_assets()
+        end
+        if ui.button("refresh assets folder") then
+            refresh_avatar_assets()
+        end
+    end)
+    if #avatar_assets == 0 then
+        ui.colored_label("#aaaaaa", "no assets found. add an image, then refresh the list.")
+    end
+
+    if local_epic_id and cdn_upload_asset and cdn_upload_asset ~= ""
+        and ui.button("upload to CDN") then
+        local path = cdn_upload_asset
+        if not path:match("^assets[\\/]") then path = "assets/" .. path end
+        plugin.upload_profile_image(path)
+    end
+
+    if local_epic_id and upload_status[local_epic_id] then
+        ui.label("status: " .. upload_status[local_epic_id])
+    end
+
+    ui.space(12)
+    ui.collapsing("Overrides", function(ui)
     ui.label("Force a specific image for one player, by platform + id. handy")
     ui.label("for anyone hebnix doesn't have a picture for. Drop the")
     ui.label("image in the assets folder first, then reference it below as")
@@ -1532,46 +1584,14 @@ function plugin.on_settings(ui)
         hebnix.open_url(OVERRIDES_PATH)
     end
     ui.label(OVERRIDES_PATH)
-
-    -- ==========================================
-    -- CDN avatar upload (test) - contributes an avatar to
-    -- pubapi.hebnix.com so other epic players' clients can look it up.
-    -- Always uses local_epic_id, never a typed-in id - the only account
-    -- this can ever upload for is whichever one is actually running the
-    -- client.
-    -- ==========================================
-
-    ui.space(12)
-    ui.heading("CDN avatar upload")
-    ui.label("Contributes your avatar to the shared CDN, for epic players -")
-    ui.label("epic has no lookup api of its own, so this is the only way")
-    ui.label("other clients can show a picture for you.")
-
-    if local_epic_id then
-        ui.label("detected epic id: " .. local_epic_id)
-    else
-        ui.colored_label("#aaaaaa", "no epic id detected - only available while playing on epic")
-    end
-
-    local cdn_upload_path = ui.text_input("cdn_upload_path", "image path, e.g. assets/me.png")
-
-    if local_epic_id and ui.button("upload to CDN") then
-        local path = cdn_upload_path:match("^%s*(.-)%s*$")
-        if path ~= "" then
-            plugin.upload_profile_image(path)
-        end
-    end
-
-    if local_epic_id and upload_status[local_epic_id] then
-        ui.label("status: " .. upload_status[local_epic_id])
-    end
+    end)
 
     -- ==========================================
     -- fetching - api keys, priority, manual test
     -- ==========================================
 
     ui.space(12)
-    ui.heading("Fetching")
+    ui.collapsing("Data sources", function(ui)
     ui.label("Per platform, pick hebnix (default, no key needed) or")
     ui.label("manual - this plugin's own key/psn-login pipeline from v1. if")
     ui.label("manual is picked but nothing's filled in, it just falls back")
@@ -1601,13 +1621,10 @@ function plugin.on_settings(ui)
     ui.label("in that same browser session visit")
     ui.label("https://ca.account.sony.com/api/v1/ssocookie and paste its")
     ui.label("\"npsso\" value above.")
+    end)
 
     ui.space(12)
-    ui.heading("Advanced / debug")
-    ui.colored_label("#aaaaaa", "Everything below is for troubleshooting and fine-tuning - most people can ignore it.")
-
-    ui.space(8)
-    ui.colored_label("#aaaaaa", "Test fetch")
+    ui.collapsing("Testing", function(ui)
     ui.label("Pick a platform + fetch method, type an id, and try it - also")
     ui.label("adds a temporary entry to the tracked players list below.")
     local test_platform = ui.combo_box("test_platform", "platform",
@@ -1665,13 +1682,16 @@ function plugin.on_settings(ui)
             ui.image(test_p.avatar_url, { width = 64, height = 64 })
         end
     end
+    end)
+
+    ui.space(12)
+    ui.collapsing("Debugging", function(ui)
 
     -- ==========================================
     -- tracked players
     -- ==========================================
 
-    ui.space(12)
-    ui.colored_label("#aaaaaa", "Tracked players")
+    ui.heading("Tracked players")
     if ui.button("re-resolve all") then
         for _, pid in ipairs(player_order) do resolve_avatar(pid) end
     end
@@ -1755,6 +1775,7 @@ function plugin.on_settings(ui)
     ui.slider("scoreboard_blue_x_nudge_midscale", "Blue row 0 X nudge", -150, 150, 0)
     ui.slider("scoreboard_orange_x_nudge_midscale", "Orange row 0 X nudge", -150, 150, 0)
     ui.slider("scoreboard_row_height_nudge", "Row spacing nudge (row 1, row 2, ...)", -150, 150, 0)
+    end)
 end
 
 function plugin.on_unload()
