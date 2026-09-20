@@ -495,6 +495,9 @@ end
 -- the cdn drops images that go unrequested for a few hours, so after a
 -- reload the last uploaded avatar gets put back once the epic id is known
 local reupload_pending = false
+-- uploading too often can get blocked, so a reload only re-uploads once the
+-- last upload (or the last re-upload attempt) is at least this old
+local REUPLOAD_MIN_AGE_SECONDS = 90 * 60
 
 local function reupload_last_avatar()
     if not reupload_pending or not local_epic_id then return end
@@ -503,7 +506,21 @@ local function reupload_last_avatar()
     if path == "" or hebnix.get_string("last_uploaded_avatar_id", "") ~= local_epic_id then
         return
     end
-    hebnix.log("PfpOverlayV2: re-uploading last avatar " .. path .. " after reload")
+    local last = math.max(hebnix.get_number("last_uploaded_at", 0),
+        hebnix.get_number("last_reupload_attempt_at", 0))
+    local age = os.time() - last
+    local age_min = math.floor(age / 60)
+    local wait_min = math.floor(REUPLOAD_MIN_AGE_SECONDS / 60)
+    if age < REUPLOAD_MIN_AGE_SECONDS then
+        hebnix.log(string.format(
+            "PfpOverlayV2: not re-uploading avatar, last upload was %d min ago (waits %d min)",
+            age_min, wait_min))
+        return
+    end
+    hebnix.log(string.format(
+        "PfpOverlayV2: re-uploading last avatar %s, last upload was %d min ago",
+        path, age_min))
+    hebnix.set("last_reupload_attempt_at", os.time())
     plugin.upload_profile_image(path)
 end
 
@@ -519,6 +536,7 @@ function plugin.on_http_upload_response(req_id, status, body)
         if uploaded_path then
             hebnix.set("last_uploaded_avatar", uploaded_path)
             hebnix.set("last_uploaded_avatar_id", platform_id)
+            hebnix.set("last_uploaded_at", os.time())
         end
         local ok, data = pcall(hebnix.json_decode, body)
         local image_url = (ok and type(data) == "table") and data.image or nil
