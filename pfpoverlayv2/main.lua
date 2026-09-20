@@ -159,15 +159,18 @@ local SCOREBOARD_UI_QUAD = {
 }
 local ROW_HEIGHT_QUAD = { 88.0, -86.0, 72.0 }
 
--- orange no longer uses this table - its correction is now the measured,
--- team-size-independent orange_row0_extra_y() formula below instead (see
--- its comment for why the old per-size orange entries here were wrong).
 local EXTRA_Y_QUAD = {
     blue = {
         [1] = { -144.0, 180.0, -54.0 },
         [2] = { -304.0, 380.0, -114.0 },
         [3] = { 483.83838383838383, -1552.6363636363637, 1366.2373737373737, -355.43939393939394 },
         [4] = { -256.0, 320.0, -96.0 },
+    },
+    orange = {
+        [1] = { 192.0, -240.0, 72.0 },
+        [2] = { 232.0, -290.0, 87.0 },
+        [3] = { 240.0, -300.0, 90.0 },
+        [4] = { 216.0, -270.0, 81.0 },
     },
 }
 local EXTRA_X_NUDGE = {
@@ -180,14 +183,6 @@ local function quad(coefs, s)
         result = result * s + c
     end
     return result
-end
-
--- Shared shape: any k*(s-0.75)*(s-1.0) is exactly 0 at both independently-
--- confirmed-correct scales (0.75 and 1.0) no matter what k is, so every
--- baked correction built from it is safe by construction at those two
--- scales - only k (derived from one real measurement) differs per use.
-local function scale_correction(k, s)
-    return k * (s - REFERENCE_UI_SCALE) * (s - 1.0)
 end
 
 local function round_up(value)
@@ -211,21 +206,8 @@ local function scale_slot(x, y, w, h, ui_quad, screen_w, screen_h)
         math.max(1, round_up(w * res_scale_x)), math.max(1, round_up(h * res_scale_y))
 end
 
--- Row spacing (ROW_HEIGHT_QUAD) has the same problem row_0 did: it's an
--- absolute value (not a zero-baseline correction), so it can't have a
--- "safe" root the way the row_0 offsets do - it was just never verified
--- below its 0.75-1.0 fitting range. Measured at 50% (2v2, confirmed exact
--- via slider): row_height(0.5) needs to be 13 smaller than the raw quad()
--- gives (51 -> 38). Applying that as a scale_correction() on top keeps
--- 0.75/1.0 exactly unchanged and interpolates smoothly for everything in
--- between/around, same pattern as the row_0 fixes.
-local ROW_HEIGHT_CORRECTION_K = -104.0
-
 local function scaled_row_height()
-    local s = ui_scale()
-    local baked = scale_correction(ROW_HEIGHT_CORRECTION_K, s)
-    local manual = hebnix.get_number("scoreboard_row_height_nudge", 0)
-    return quad(ROW_HEIGHT_QUAD, s) + baked + manual
+    return quad(ROW_HEIGHT_QUAD, ui_scale())
 end
 
 -- Fine-tuning nudges for cases the SCOREBOARD_LAYOUTS/EXTRA_Y_QUAD tables
@@ -251,111 +233,79 @@ local function scoreboard_x_nudge()
     return nudge
 end
 
--- EXTRA_Y_QUAD.orange used to be a per-team-size correction built on a
--- guessed shape (assumed root at s=0.5, assumed proportional-to-size
--- scaling) that turned out wrong on both counts. It's genuinely per-size,
--- just not the way the old table assumed - orange needed -69/-68/-67ish
--- at 1v1/2v2/3v3 (a few px apart, not proportional to size at all), and
--- blue is -1 at 2v2, -23 at 1v1, +20 at 3v3, and +87 at 4v4 (team-size
--- dependence is real and large for blue, much smaller for orange). Both
--- teams/axes share the same safe shape - k*(s-0.75)*(s-1.0), exactly 0 at
--- the two independently-confirmed-correct scales no matter what k is -
--- just with a k measured per team size instead of one guessed/averaged
--- constant. Blue's X at 4v4 hasn't been measured yet (defaults to 0).
-local ROW0_EXTRA_Y_K = {
-    orange = { [1] = -552.0, [2] = -544.0, [3] = -532.6666664, [4] = -568.0 },
-    blue = { [1] = -184.0, [2] = -8.0, [3] = 160.0, [4] = 696.0 },
+local PLATFORM_SB = {
+    left = 537,
+    blue_bottom = 67,
+    orange_top = 43,
+    banner_distance = 57,
+    board_w = 1033,
+    board_h = 548,
+    imbalance = 32,
+    y_offcenter = 32,
 }
-local ROW0_EXTRA_X_K = {
-    blue = { [1] = -8.0, [2] = -8.0 },
-}
+local PLATFORM_MUTATOR_EDGE = 1030
+local PLATFORM_X_OFFSET = -35
+local PLATFORM_X_OFFSET_FIRST = -35
+local PLATFORM_ICON_COL = -530.5
+local PLATFORM_ICON_PX = 100
+local PLATFORM_IMAGE_SCALE = 0.48
 
-local function row0_extra(table_by_team, team, team_size, s)
-    local by_size = table_by_team[team]
-    local k = by_size and by_size[team_size]
-    if not k then return 0 end
-    return scale_correction(k, s)
-end
-
-local ROW0_Y_NUDGE_SETTING = {
-    blue = "scoreboard_blue_y_nudge_midscale",
-    orange = "scoreboard_orange_y_nudge_midscale",
-}
-local ROW0_X_NUDGE_SETTING = {
-    blue = "scoreboard_blue_x_nudge_midscale",
-    orange = "scoreboard_orange_x_nudge_midscale",
-}
-
--- scale_correction()'s curve is 0 at exactly 0.75 by construction, but
--- that assumption turned out imperfect too: at 75% specifically (not the
--- 50-100% curve, a flat correction only at this one exact scale), orange
--- row_0 Y needs +1 at 1v1/2v2/3v3, and blue row_0 X needs +1 at 3v3 only.
--- Applied as a separate discrete override on top of the curve rather than
--- folded into it, since it's scoped to one exact scale value, not a shape.
-local ROW0_AT_REFERENCE_Y = {
-    orange = { [1] = 1, [2] = 1, [3] = 1 },
-}
-local ROW0_AT_REFERENCE_X = {
-    blue = { [3] = 1 },
-    orange = { [3] = 1 },
-}
-
-local function row0_at_reference(table_by_team, team, team_size, s)
-    if s ~= REFERENCE_UI_SCALE then return 0 end
-    local by_size = table_by_team[team]
-    return (by_size and by_size[team_size]) or 0
-end
-
-local function row0_y_nudge(team, team_size)
-    local s = ui_scale()
-    local baked = row0_extra(ROW0_EXTRA_Y_K, team, team_size, s)
-        + row0_at_reference(ROW0_AT_REFERENCE_Y, team, team_size, s)
-    local manual = hebnix.get_number(ROW0_Y_NUDGE_SETTING[team], 0)
-    return baked + manual
-end
-
-local function row0_x_nudge(team, team_size)
-    local s = ui_scale()
-    local baked = row0_extra(ROW0_EXTRA_X_K, team, team_size, s)
-        + row0_at_reference(ROW0_AT_REFERENCE_X, team, team_size, s)
-    local setting = ROW0_X_NUDGE_SETTING[team]
-    local manual = setting and hebnix.get_number(setting, 0) or 0
-    return baked + manual
-end
-
-local function get_scoreboard_slots(team_size, other_size, screen_w, screen_h)
-    team_size = math.max(1, math.min(4, team_size))
-    local layout = SCOREBOARD_LAYOUTS[team_size]
-    local row_height = scaled_row_height()
-    local x_nudge = scoreboard_x_nudge()
-
-    -- same-size teams (the common case) get 0 here, matching today's
-    -- behaviour exactly - only an unequal match nudges both teams'
-    -- baseline by the same amount, same as sb_layout's shared cy shift.
-    local imbalance_unit = hebnix.get_number("scoreboard_imbalance_nudge", 0)
-    local imbalance_y = 0
-    if other_size and imbalance_unit ~= 0 then
-        local difference = team_size - other_size
-        local lopsided = (team_size == 0) ~= (other_size == 0)
-        local sign = difference >= 0 and 1 or -1
-        imbalance_y = imbalance_unit * (difference - (lopsided and sign or 0))
+local function platform_scoreboard_layout(w, h, blues, oranges)
+    local scale
+    if w / h > 1.5 then
+        scale = 0.507 * h / PLATFORM_SB.board_h
+    else
+        scale = 0.615 * w / PLATFORM_SB.board_w
     end
+    local s = scale * ui_scale()
+    local cx = w / 2
+    if shows_mutator_strip() then
+        local strip_cx = w - PLATFORM_MUTATOR_EDGE * s
+        if strip_cx < cx then cx = strip_cx end
+    end
+    local x_offset = in_first_open and PLATFORM_X_OFFSET_FIRST or PLATFORM_X_OFFSET
+    cx = cx + (x_offset + scoreboard_x_nudge()) * s
+    local cy = h / 2 + PLATFORM_SB.y_offcenter * s
+    local difference = blues - oranges
+    local lopsided = (blues == 0) ~= (oranges == 0)
+    local sign = difference >= 0 and 1 or -1
+    local adjusted_difference = difference - (lopsided and sign or 0)
+    cy = cy + PLATFORM_SB.imbalance * adjusted_difference * s
+    cy = cy + hebnix.get_number("scoreboard_imbalance_nudge", 0)
+        * adjusted_difference * s
+    return {
+        scale = s,
+        x = cx + PLATFORM_ICON_COL * s,
+        size = PLATFORM_ICON_PX * PLATFORM_IMAGE_SCALE * s,
+        blue_y = cy + (-PLATFORM_SB.blue_bottom + 6 * (4 - blues)
+            - PLATFORM_SB.banner_distance * blues + 9) * s,
+        orange_y = cy + PLATFORM_SB.orange_top * s,
+        separation = (PLATFORM_SB.banner_distance
+            + hebnix.get_number("scoreboard_row_height_nudge", 0)) * s,
+    }
+end
 
+local function get_scoreboard_slots(team_size, other_size, screen_w, screen_h, team)
+    team_size = math.max(1, math.min(4, team_size))
+    other_size = math.max(0, math.min(4, other_size or 0))
+    local blues = team == "blue" and team_size or other_size
+    local oranges = team == "orange" and team_size or other_size
+    local layout = platform_scoreboard_layout(screen_w, screen_h, blues, oranges)
+    local manual_x = hebnix.get_number("scoreboard_" .. team .. "_x_nudge_midscale", 0)
+        * layout.scale
+    local manual_y = hebnix.get_number("scoreboard_" .. team .. "_y_nudge_midscale", 0)
+        * layout.scale
+    local row0_y = (team == "blue" and layout.blue_y or layout.orange_y) + manual_y
     local slots = {}
-    for _, team in ipairs({ "blue", "orange" }) do
-        local row0_x = SLOT_X + x_nudge + ((EXTRA_X_NUDGE[team] or {})[team_size] or 0)
-            + row0_x_nudge(team, team_size)
-        local row0_y = layout[team] + imbalance_y
-        local extra_y = (EXTRA_Y_QUAD[team] or {})[team_size]
-        if extra_y then
-            row0_y = row0_y + quad(extra_y, ui_scale())
-        end
-        row0_y = row0_y + row0_y_nudge(team, team_size)
-        for row = 0, team_size - 1 do
-            local x, y, w, h = scale_slot(row0_x, row0_y + row * row_height, BOX_SIZE, BOX_SIZE,
-                SCOREBOARD_UI_QUAD, screen_w, screen_h)
-            table.insert(slots, { team = team, row = row, x = x, y = y, w = w, h = h })
-        end
+    for row = 0, team_size - 1 do
+        table.insert(slots, {
+            team = team,
+            row = row,
+            x = math.ceil(layout.x + manual_x),
+            y = math.ceil(row0_y + row * layout.separation),
+            w = math.max(1, math.ceil(layout.size)),
+            h = math.max(1, math.ceil(layout.size)),
+        })
     end
     return slots
 end
@@ -385,8 +335,6 @@ local players = {}
 local player_order = {}
 local seen = {}
 local pending_tracker = {} -- key -> true, players awaiting a hebnix.stats_result
-local next_insertion_index = 0 -- see track_player: gives every player a unique,
-    -- permanent join-order number, used as the final scoreboard tie-break
 
 local last_goal = nil -- { scorer_name, scorer_key, timestamp } or nil
 
@@ -514,6 +462,8 @@ local CDN_LOOKUP_URL = "https://pubapi.hebnix.com/rocket-profiles/images"
 
 -- req_id -> platform_id, for on_http_upload_response
 local pending_uploads = {}
+-- req_id -> asset path, so a successful upload can be remembered
+local pending_upload_paths = {}
 -- platform_id -> "uploading" | "ok" | "error: ..." for the settings ui
 local upload_status = {}
 
@@ -531,6 +481,7 @@ function plugin.upload_profile_image(image_path)
     local abs_path = resolve_asset_path(image_path)
     local req_id = "cdn_upload:" .. local_epic_id .. ":" .. tostring(os.time())
     pending_uploads[req_id] = local_epic_id
+    pending_upload_paths[req_id] = image_path
     upload_status[local_epic_id] = "uploading"
     hebnix.http_multipart_post_async(
         req_id,
@@ -541,13 +492,34 @@ function plugin.upload_profile_image(image_path)
     )
 end
 
+-- the cdn drops images that go unrequested for a few hours, so after a
+-- reload the last uploaded avatar gets put back once the epic id is known
+local reupload_pending = false
+
+local function reupload_last_avatar()
+    if not reupload_pending or not local_epic_id then return end
+    reupload_pending = false
+    local path = hebnix.get_string("last_uploaded_avatar", "")
+    if path == "" or hebnix.get_string("last_uploaded_avatar_id", "") ~= local_epic_id then
+        return
+    end
+    hebnix.log("PfpOverlayV2: re-uploading last avatar " .. path .. " after reload")
+    plugin.upload_profile_image(path)
+end
+
 function plugin.on_http_upload_response(req_id, status, body)
     local platform_id = pending_uploads[req_id]
     if not platform_id then return end
     pending_uploads[req_id] = nil
+    local uploaded_path = pending_upload_paths[req_id]
+    pending_upload_paths[req_id] = nil
 
     if status == 200 or status == 201 then
         upload_status[platform_id] = "ok"
+        if uploaded_path then
+            hebnix.set("last_uploaded_avatar", uploaded_path)
+            hebnix.set("last_uploaded_avatar_id", platform_id)
+        end
         local ok, data = pcall(hebnix.json_decode, body)
         local image_url = (ok and type(data) == "table") and data.image or nil
         hebnix.log("PfpOverlayV2: CDN upload for " .. platform_id .. " succeeded" ..
@@ -1107,13 +1079,11 @@ local function track_player(pid, name, team_num, shortcut)
     seen[key] = true
     local is_bot = hebnix.is_bot(pid)
     local platform, platform_id = parse_platform(pid)
-    next_insertion_index = next_insertion_index + 1
     players[key] = {
         name = name, platform = platform, platform_id = platform_id, is_bot = is_bot,
         raw_pid = pid,
         avatar_path = nil, avatar_url = nil, status = is_bot and "bot (no avatar)" or "new",
         team_num = team_num or 0, score = 0, shortcut = shortcut or 0, disconnected = false,
-        insertion_index = next_insertion_index,
     }
     table.insert(player_order, key)
     if not is_bot then resolve_avatar(key) end
@@ -1143,6 +1113,7 @@ function plugin.on_load()
     hebnix.log("PfpOverlayV2 loaded")
     hebnix.refresh_action_binds()
     refresh_avatar_assets()
+    reupload_pending = true
 end
 
 function plugin.on_game_event(event_type, event)
@@ -1215,6 +1186,7 @@ local override_id_gen = 0
 function plugin.on_tick()
     poll_tracker_results()
     refresh_local_identity()
+    reupload_last_avatar()
     refresh_detected_ui_scale()
     flush_epic_lookups()
 
@@ -1283,23 +1255,11 @@ local function scoreboard_teams()
     end
     -- same order RL's own scoreboard uses: score descending, and when
     -- scores tie (usually 0-0 early in a match) it falls back to each
-    -- player's shortcut id, also descending. But shortcut isn't guaranteed
-    -- unique (bots in particular likely never get a real one and all
-    -- default to 0), and when it ties too, Lua's table.sort is NOT stable
-    -- - two players judged fully equal by this comparator can silently
-    -- swap order from one frame to the next with no visible cause. That
-    -- matched a reported bug: correct at match start (before scores
-    -- diverge, so shortcut ties are rare) but occasionally wrong later
-    -- once two players re-converge on the same score. insertion_index is
-    -- always unique and never changes once assigned, so it's a safe final
-    -- tiebreaker that makes the sort fully deterministic every time.
+    -- player's shortcut id, also descending.
     local function by_score_desc(a, b)
         local pa, pb = players[a], players[b]
         if pa.score ~= pb.score then return pa.score > pb.score end
-        if (pa.shortcut or 0) ~= (pb.shortcut or 0) then
-            return (pa.shortcut or 0) > (pb.shortcut or 0)
-        end
-        return (pa.insertion_index or 0) < (pb.insertion_index or 0)
+        return (pa.shortcut or 0) > (pb.shortcut or 0)
     end
     table.sort(blue, by_score_desc)
     table.sort(orange, by_score_desc)
@@ -1339,26 +1299,18 @@ end
 -- instead of both being forced to match the bigger side.
 local function draw_team_avatars(draw, team_color, list, ghost, other_size, w, h)
     local size = #list
-    if size > 0 then
-        for _, slot in ipairs(get_scoreboard_slots(size, other_size, w, h)) do
-            if slot.team == team_color then
-                local p = players[list[slot.row + 1]]
-                if p and p.avatar_path then
-                    pcall(function() draw.image(p.avatar_path, slot.x, slot.y, slot.w, slot.h) end)
-                end
+    local layout_size = size + (ghost and 1 or 0)
+    if layout_size == 0 then return end
+    for _, slot in ipairs(get_scoreboard_slots(layout_size, other_size, w, h, team_color)) do
+        if slot.row < size then
+            local p = players[list[slot.row + 1]]
+            if p and p.avatar_path then
+                pcall(function() draw.image(p.avatar_path, slot.x, slot.y, slot.w, slot.h) end)
             end
-        end
-    end
-    if ghost then
-        -- one row bigger than the active layout, at the new bottom row -
-        -- e.g. a 2v2 that lost a player renders that team like a 3v3
-        -- with the departed player pinned to row 3.
-        for _, slot in ipairs(get_scoreboard_slots(size + 1, other_size, w, h)) do
-            if slot.team == team_color and slot.row == size then
-                local p = players[ghost]
-                if p.avatar_path then
-                    pcall(function() draw.image(p.avatar_path, slot.x, slot.y, slot.w, slot.h) end)
-                end
+        elseif ghost and slot.row == size then
+            local p = players[ghost]
+            if p and p.avatar_path then
+                pcall(function() draw.image(p.avatar_path, slot.x, slot.y, slot.w, slot.h) end)
             end
         end
     end
@@ -1369,8 +1321,10 @@ local function draw_scoreboard_avatars(draw, w, h)
     local blue, orange, blue_ghost, orange_ghost = scoreboard_teams()
     if #blue == 0 and #orange == 0 and not blue_ghost and not orange_ghost then return end
 
-    draw_team_avatars(draw, "blue", blue, blue_ghost, #orange, w, h)
-    draw_team_avatars(draw, "orange", orange, orange_ghost, #blue, w, h)
+    local blue_size = #blue + (blue_ghost and 1 or 0)
+    local orange_size = #orange + (orange_ghost and 1 or 0)
+    draw_team_avatars(draw, "blue", blue, blue_ghost, orange_size, w, h)
+    draw_team_avatars(draw, "orange", orange, orange_ghost, blue_size, w, h)
 end
 
 local function draw_goal_nameplate(draw, w, h)
@@ -1400,18 +1354,7 @@ end
 -- ==========================================
 
 function plugin.on_settings(ui)
-    ui.label("Shows player avatars on the scoreboard and goal replay nameplate.")
-    ui.label("Avatars come from hebnix automatically, no api keys needed.")
-
-    -- ==========================================
-    -- quick start - the stuff you need to set up first
-    -- ==========================================
-
-    ui.space(10)
-    ui.heading("Quick Start")
-
-    ui.space(4)
-    ui.heading("Interface scale")
+    ui.heading("Interface Scale")
     ui.label("Must match RL's own options > video > interface scale, or the")
     ui.label("profiles will render in the wrong spot.")
     local ui_scale_auto_detect = ui.checkbox("ui_scale_auto_detect",
@@ -1472,61 +1415,43 @@ function plugin.on_settings(ui)
         end)
     end
 
-    -- ==========================================
-    -- CDN avatar upload - contributes an avatar to pubapi.hebnix.com so
-    -- other epic players' clients can look it up. Always uses
-    -- local_epic_id, never a typed-in id - the only account this can
-    -- ever upload for is whichever one is actually running the client.
-    -- Picks the image from a dropdown of the assets folder's contents
-    -- instead of a free-typed path, so there's nothing to misspell.
-    -- ==========================================
-
     ui.space(12)
-    ui.heading("Epic avatar uploading")
-    ui.label("Contributes your avatar to the shared CDN, for epic players -")
-    ui.label("epic has no lookup api of its own, so this is the only way")
-    ui.label("other clients can show a picture for you.")
-
+    ui.heading("Epic Avatar Uploading")
+    ui.label("Choose an image from this plugin's assets folder and upload it")
+    ui.label("as the avatar for the Epic account currently running Rocket League.")
     if local_epic_id then
-        ui.label("detected epic id: " .. local_epic_id)
+        ui.label("Detected Epic ID: " .. local_epic_id)
     else
-        ui.colored_label("#aaaaaa", "no epic id detected - only available while playing on epic")
+        ui.colored_label("#aaaaaa",
+            "No Epic ID detected - uploading is only available while playing on Epic.")
     end
-
-    local cdn_upload_asset = ui.combo_box("cdn_upload_asset", "avatar image", avatar_assets)
+    local cdn_upload_asset = ui.combo_box("cdn_upload_asset", "Avatar image", avatar_assets)
     ui.horizontal(function()
-        if ui.button("open assets folder") then
-            hebnix.settings.open_assets()
+        if ui.button("Open Assets Folder") then
+            hebnix.open_url(PLUGIN_DIR .. "/assets")
         end
-        if ui.button("refresh assets folder") then
+        if ui.button("Refresh Assets Folder") then
             refresh_avatar_assets()
         end
     end)
     if #avatar_assets == 0 then
-        ui.colored_label("#aaaaaa", "no assets found. add an image, then refresh the list.")
+        ui.colored_label("#aaaaaa", "No assets found. Add an image, then refresh the list.")
     end
-
     if local_epic_id and cdn_upload_asset and cdn_upload_asset ~= ""
-        and ui.button("upload to CDN") then
+        and ui.button("Upload Epic Avatar") then
         local path = cdn_upload_asset
         if not path:match("^assets[\\/]") then path = "assets/" .. path end
         plugin.upload_profile_image(path)
     end
-
     if local_epic_id and upload_status[local_epic_id] then
-        ui.label("status: " .. upload_status[local_epic_id])
+        ui.label("Status: " .. upload_status[local_epic_id])
     end
 
     ui.space(12)
     ui.collapsing("Overrides", function(ui)
     ui.label("Force a specific image for one player, by platform + id. handy")
-    ui.label("for anyone hebnix doesn't have a picture for. Drop the")
-    ui.label("image in the assets folder first, then reference it below as")
-    ui.label("assets/name.png.")
-
-    if ui.button("open assets folder") then
-        hebnix.settings.open_assets()
-    end
+    ui.label("for anyone hebnix doesn't have a picture for. Drop the image")
+    ui.label("in the assets folder, refresh the list, then pick it below.")
 
     ui.space(4)
     local override_platform = ui.combo_box("override_add_platform", "platform",
@@ -1546,11 +1471,23 @@ function plugin.on_settings(ui)
             end
         end
     end)
-    local override_path = ui.text_input("override_add_path", "image path, e.g. assets/me.png")
+    local override_asset = ui.combo_box("override_add_asset", "Avatar image", avatar_assets)
+    ui.horizontal(function()
+        if ui.button("Open Assets Folder") then
+            hebnix.open_url(PLUGIN_DIR .. "/assets")
+        end
+        if ui.button("Refresh Assets Folder") then
+            refresh_avatar_assets()
+        end
+    end)
+    if #avatar_assets == 0 then
+        ui.colored_label("#aaaaaa", "No assets found. Add an image, then refresh the list.")
+    end
 
     if ui.button("add / update override") then
         local id = override_id:match("^%s*(.-)%s*$")
-        local path = override_path:match("^%s*(.-)%s*$")
+        local path = (override_asset or ""):match("^%s*(.-)%s*$")
+        if path ~= "" and not path:match("^assets[\\/]") then path = "assets/" .. path end
         if id ~= "" and path ~= "" then
             local key = override_platform .. "|" .. id
             local overrides = load_overrides()
@@ -1584,14 +1521,13 @@ function plugin.on_settings(ui)
         hebnix.open_url(OVERRIDES_PATH)
     end
     ui.label(OVERRIDES_PATH)
-    end)
 
     -- ==========================================
     -- fetching - api keys, priority, manual test
     -- ==========================================
 
     ui.space(12)
-    ui.collapsing("Data sources", function(ui)
+    ui.heading("Data Sources")
     ui.label("Per platform, pick hebnix (default, no key needed) or")
     ui.label("manual - this plugin's own key/psn-login pipeline from v1. if")
     ui.label("manual is picked but nothing's filled in, it just falls back")
@@ -1621,6 +1557,7 @@ function plugin.on_settings(ui)
     ui.label("in that same browser session visit")
     ui.label("https://ca.account.sony.com/api/v1/ssocookie and paste its")
     ui.label("\"npsso\" value above.")
+
     end)
 
     ui.space(12)
@@ -1682,16 +1619,12 @@ function plugin.on_settings(ui)
             ui.image(test_p.avatar_url, { width = 64, height = 64 })
         end
     end
+
     end)
 
     ui.space(12)
     ui.collapsing("Debugging", function(ui)
-
-    -- ==========================================
-    -- tracked players
-    -- ==========================================
-
-    ui.heading("Tracked players")
+    ui.heading("Tracked Players")
     if ui.button("re-resolve all") then
         for _, pid in ipairs(player_order) do resolve_avatar(pid) end
     end

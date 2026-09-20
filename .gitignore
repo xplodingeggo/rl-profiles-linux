@@ -1,1 +1,6 @@
-pfpoverlayv2/assets/
+pfpoverlayv2/assets/*
+!pfpoverlayv2/assets/cache/
+pfpoverlayv2/assets/cache/*
+!pfpoverlayv2/assets/cache/README.txt
+pfpoverlayv2/psn_tokens.json
+pfpoverlayv2/overrides.json
