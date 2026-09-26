@@ -11,6 +11,11 @@ local plugin = {}
 
 local PLUGIN_DIR = hebnix.plugin_dir()
 
+-- only logs when "debug logs" is on in settings, so the console stays quiet
+local function dlog(msg)
+    if hebnix.get_bool("debug_logs", false) then hebnix.log(msg) end
+end
+
 -- ==========================================
 -- Config / overrides
 -- ==========================================
@@ -41,7 +46,7 @@ local function write_overrides_file(tbl)
     end
     local f = io.open(OVERRIDES_PATH, "w")
     if not f then
-        hebnix.log("PfpOverlayV2: FAILED to open " .. OVERRIDES_PATH .. " for writing")
+        dlog("PfpOverlayV2: FAILED to open " .. OVERRIDES_PATH .. " for writing")
         return false
     end
     if #lines == 0 then
@@ -504,7 +509,10 @@ local function reupload_last_avatar()
     reupload_pending = false
     local path = hebnix.get_string("last_uploaded_avatar", "")
     if path == "" or hebnix.get_string("last_uploaded_avatar_id", "") ~= local_epic_id then
-        return
+        -- nothing uploaded yet with this account, use the image picked in settings
+        path = hebnix.get_string("cdn_upload_asset", "")
+        if path == "" then return end
+        if not path:match("^assets[\\/]") then path = "assets/" .. path end
     end
     local last = math.max(hebnix.get_number("last_uploaded_at", 0),
         hebnix.get_number("last_reupload_attempt_at", 0))
@@ -512,12 +520,12 @@ local function reupload_last_avatar()
     local age_min = math.floor(age / 60)
     local wait_min = math.floor(REUPLOAD_MIN_AGE_SECONDS / 60)
     if age < REUPLOAD_MIN_AGE_SECONDS then
-        hebnix.log(string.format(
+        dlog(string.format(
             "PfpOverlayV2: not re-uploading avatar, last upload was %d min ago (waits %d min)",
             age_min, wait_min))
         return
     end
-    hebnix.log(string.format(
+    dlog(string.format(
         "PfpOverlayV2: re-uploading last avatar %s, last upload was %d min ago",
         path, age_min))
     hebnix.set("last_reupload_attempt_at", os.time())
@@ -540,11 +548,11 @@ function plugin.on_http_upload_response(req_id, status, body)
         end
         local ok, data = pcall(hebnix.json_decode, body)
         local image_url = (ok and type(data) == "table") and data.image or nil
-        hebnix.log("PfpOverlayV2: CDN upload for " .. platform_id .. " succeeded" ..
+        dlog("PfpOverlayV2: CDN upload for " .. platform_id .. " succeeded" ..
             (image_url and (" -> " .. image_url) or ""))
     else
         upload_status[platform_id] = "error: http " .. tostring(status)
-        hebnix.log("PfpOverlayV2: CDN upload for " .. platform_id .. " failed, status=" ..
+        dlog("PfpOverlayV2: CDN upload for " .. platform_id .. " failed, status=" ..
             tostring(status) .. " body=" .. tostring(body):sub(1, 500))
     end
 end
@@ -572,7 +580,7 @@ local function flush_epic_lookups()
     end
 
     local body = hebnix.json_encode({ platform_ids = ids })
-    hebnix.log("PfpOverlayV2: CDN lookup request body=" .. tostring(body))
+    dlog("PfpOverlayV2: CDN lookup request body=" .. tostring(body))
     hebnix.http_post_async(CDN_LOOKUP_REQ_ID, CDN_LOOKUP_URL, body,
         { ["Content-Type"] = "application/json" })
 end
@@ -590,7 +598,7 @@ local function handle_cdn_lookup_response(status, body)
     local requested = epic_lookups_in_flight or {}
     epic_lookups_in_flight = nil
 
-    hebnix.log("PfpOverlayV2: CDN lookup response status=" .. tostring(status) ..
+    dlog("PfpOverlayV2: CDN lookup response status=" .. tostring(status) ..
         " body=" .. tostring(body):sub(1, 1000))
 
     if status ~= 200 then
@@ -605,7 +613,7 @@ local function handle_cdn_lookup_response(status, body)
 
     local ok, data = pcall(hebnix.json_decode, body)
     if not ok then
-        hebnix.log("PfpOverlayV2: CDN lookup response failed to json_decode: " .. tostring(data))
+        dlog("PfpOverlayV2: CDN lookup response failed to json_decode: " .. tostring(data))
     end
     local images = (ok and type(data) == "table") and data.images or {}
     local found = {}
@@ -748,7 +756,7 @@ local function psn_token_flow_failed(reason)
         local p = players[pid]
         if p then p.status = "psn auth failed: " .. reason end
     end
-    hebnix.log("PfpOverlayV2: PSN auth flow failed: " .. reason)
+    dlog("PfpOverlayV2: PSN auth flow failed: " .. reason)
 end
 
 local function psn_start_refresh(refresh_token)
@@ -805,13 +813,13 @@ end
 -- handles both refresh and bootstrap responses - same shape, different grant_type
 local function handle_psn_token_response(status, body, is_bootstrap)
     if status ~= 200 then
-        hebnix.log("PfpOverlayV2: PSN token request failed, status=" .. tostring(status) ..
+        dlog("PfpOverlayV2: PSN token request failed, status=" .. tostring(status) ..
             " body=" .. tostring(body):sub(1, 300))
         if is_bootstrap then
             psn_token_flow_failed("token exchange failed (HTTP " .. tostring(status) .. ")")
         else
             if psn_npsso() ~= "" then
-                hebnix.log("PfpOverlayV2: PSN refresh_token rejected, falling back to NPSSO bootstrap")
+                dlog("PfpOverlayV2: PSN refresh_token rejected, falling back to NPSSO bootstrap")
                 psn_start_bootstrap(psn_npsso())
             else
                 psn_token_flow_failed("refresh rejected and no psn_npsso set")
@@ -838,7 +846,7 @@ local function handle_psn_token_response(status, body, is_bootstrap)
     }
     save_psn_tokens(tokens)
     psn_token_flow_active = false
-    hebnix.log("PfpOverlayV2: PSN access token " ..
+    dlog("PfpOverlayV2: PSN access token " ..
         (is_bootstrap and "authenticated fresh via NPSSO" or "refreshed"))
     drain_psn_waiters()
 end
@@ -847,7 +855,7 @@ end
 local function handle_psn_authorize_redirect(status, location)
     local code = location:match("[?&]code=([^&]+)")
     if not code then
-        hebnix.log("PfpOverlayV2: PSN NPSSO exchange failed (status=" .. tostring(status) ..
+        dlog("PfpOverlayV2: PSN NPSSO exchange failed (status=" .. tostring(status) ..
             " location=" .. tostring(location) .. "). NPSSO is likely expired or invalid - " ..
             "get a fresh one by logging into playstation.com in a browser, then visiting " ..
             "https://ca.account.sony.com/api/v1/ssocookie in the same browser session, and " ..
@@ -906,7 +914,7 @@ function plugin.on_http_response(url, status, body)
 
     if status ~= 200 then
         p.status = "http error " .. tostring(status) .. " (" .. req.kind .. ")"
-        hebnix.log("PfpOverlayV2: " .. req.kind .. " request for " .. p.name .. " failed, status=" ..
+        dlog("PfpOverlayV2: " .. req.kind .. " request for " .. p.name .. " failed, status=" ..
             tostring(status) .. " body=" .. tostring(body):sub(1, 500))
         return
     end
@@ -1005,7 +1013,7 @@ local function resolve_avatar(key)
             ensure_psn_token_then_fetch(key)
             return
         end
-        hebnix.log("PfpOverlayV2: manual fetch prioritized for " .. p.platform ..
+        dlog("PfpOverlayV2: manual fetch prioritized for " .. p.platform ..
             " but no key/npsso configured, falling back to hebnix")
     end
 
@@ -1036,11 +1044,11 @@ function plugin.on_http_download_response(url, status, body)
         f:close()
         p.avatar_path = rel_path
         p.status = "resolved (" .. req.source .. ", " .. #body .. " bytes)"
-        hebnix.log("PfpOverlayV2: downloaded avatar for " .. p.name .. " -> " .. abs_path ..
+        dlog("PfpOverlayV2: downloaded avatar for " .. p.name .. " -> " .. abs_path ..
             " (" .. #body .. " bytes)")
     else
         p.status = "failed to write avatar file"
-        hebnix.log("PfpOverlayV2: FAILED to open " .. abs_path .. " for writing: " ..
+        dlog("PfpOverlayV2: FAILED to open " .. abs_path .. " for writing: " ..
             tostring(open_err) .. " (errno=" .. tostring(open_errno) .. ")")
     end
 end
@@ -1160,7 +1168,7 @@ function plugin.on_game_event(event_type, event)
         local p = players[key]
         if p then
             p.disconnected = true
-            hebnix.log("PfpOverlayV2: PlayerLeft " .. name .. " (" .. key .. "), marked disconnected")
+            dlog("PfpOverlayV2: PlayerLeft " .. name .. " (" .. key .. "), marked disconnected")
         end
     elseif event_type == "GoalScored" then
         local scorer_name = event.data.Scorer and event.data.Scorer.Name or ""
@@ -1172,7 +1180,7 @@ function plugin.on_game_event(event_type, event)
             end
         end
         last_goal = { scorer_name = scorer_name, scorer_key = scorer_key, timestamp = os.time() }
-        hebnix.log("PfpOverlayV2: GoalScored by " .. scorer_name .. " (matched key: " .. tostring(scorer_key) .. ")")
+        dlog("PfpOverlayV2: GoalScored by " .. scorer_name .. " (matched key: " .. tostring(scorer_key) .. ")")
     elseif event_type == "GameLeft" or event_type == "MatchEnded" then
         clear_players()
     elseif event_type == "MatchCreated" or event_type == "MatchInitialized" then
@@ -1372,6 +1380,8 @@ end
 -- ==========================================
 
 function plugin.on_settings(ui)
+    ui.checkbox("debug_logs", "debug logs (spams the console, off by default)", false)
+    ui.space(6)
     ui.heading("Interface Scale")
     ui.label("Must match RL's own options > video > interface scale, or the")
     ui.label("profiles will render in the wrong spot.")
@@ -1446,7 +1456,7 @@ function plugin.on_settings(ui)
     local cdn_upload_asset = ui.combo_box("cdn_upload_asset", "Avatar image", avatar_assets)
     ui.horizontal(function()
         if ui.button("Open Assets Folder") then
-            hebnix.open_url(PLUGIN_DIR .. "/assets")
+            hebnix.open_path(PLUGIN_DIR .. "/assets")
         end
         if ui.button("Refresh Assets Folder") then
             refresh_avatar_assets()
@@ -1492,7 +1502,7 @@ function plugin.on_settings(ui)
     local override_asset = ui.combo_box("override_add_asset", "Avatar image", avatar_assets)
     ui.horizontal(function()
         if ui.button("Open Assets Folder") then
-            hebnix.open_url(PLUGIN_DIR .. "/assets")
+            hebnix.open_path(PLUGIN_DIR .. "/assets")
         end
         if ui.button("Refresh Assets Folder") then
             refresh_avatar_assets()
@@ -1730,7 +1740,7 @@ function plugin.on_settings(ui)
 end
 
 function plugin.on_unload()
-    hebnix.log("PfpOverlayV2 unloaded")
+    dlog("PfpOverlayV2 unloaded")
 end
 
 return plugin
