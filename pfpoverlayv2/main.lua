@@ -136,12 +136,22 @@ local function refresh_detected_ui_scale()
         local summary = hebnix.save_summary_result(ui_scale_pending_key)
         if summary == nil or summary == "pending" then return end
         ui_scale_pending_key = nil
-        if summary.ui_scale and summary.ui_scale > 0 then
+        if type(summary) == "table" and summary.ui_scale and summary.ui_scale > 0 then
             detected_ui_scale = summary.ui_scale
+        elseif not detected_ui_scale then
+            -- couldn't read the save file and nothing was ever detected:
+            -- switch to a manual 100% so the profiles at least land
+            -- somewhere sensible, and tell the user why in the settings.
+            local why = type(summary) == "table" and summary.error or "no interface scale in save data"
+            dlog("PfpOverlayV2: save data fetch failed (" .. tostring(why) .. "), auto-detect off, scale 100%")
+            hebnix.set("ui_scale_auto_detect", false)
+            hebnix.set("rl_ui_scale_percent", "100")
+            hebnix.set("ui_scale_autodisabled", true)
         end
         return
     end
 
+    if not hebnix.get_bool("ui_scale_auto_detect", true) then return end
     if os.time() - last_ui_scale_check < 5 then return end
     last_ui_scale_check = os.time()
     hebnix.clear_save_summary_cache()
@@ -152,10 +162,17 @@ local function ui_scale()
     if hebnix.get_bool("ui_scale_auto_detect", true) and detected_ui_scale then
         return detected_ui_scale
     end
-    local raw = hebnix.get_string("rl_ui_scale", "")
-    local value = tonumber(raw)
+    -- manual field is a percentage ("75" = 75%, same as RL's own slider)
+    local raw = hebnix.get_string("rl_ui_scale_percent", "")
+    if raw == "" then
+        -- field from before it was a percentage held a decimal (0.75)
+        local old = tonumber(hebnix.get_string("rl_ui_scale", ""))
+        if old and old > 0 then return old end
+        return REFERENCE_UI_SCALE
+    end
+    local value = tonumber((raw:gsub("%s*%%%s*$", "")))
     if not value or value <= 0 then return REFERENCE_UI_SCALE end
-    return value
+    return value / 100
 end
 
 local function quad(coefs, s)
@@ -1620,13 +1637,32 @@ function plugin.on_settings(ui)
     local ui_scale_auto_detect = ui.checkbox("ui_scale_auto_detect",
         "auto-detect from RL's own save file (recommended)", true)
     if ui_scale_auto_detect then
+        hebnix.set("ui_scale_autodisabled", false)
         if detected_ui_scale then
-            ui.label("detected: " .. tostring(detected_ui_scale))
+            ui.label(string.format("detected: %g%%", math.floor(detected_ui_scale * 1000 + 0.5) / 10))
         else
             ui.colored_label("#d35400", "couldn't read interface scale from RL's save file yet.")
         end
     else
-        ui.text_input("rl_ui_scale", "RL interface scale", tostring(REFERENCE_UI_SCALE))
+        if hebnix.get_bool("ui_scale_autodisabled", false) then
+            ui.colored_label("#d35400",
+                "couldn't read RL's save data, so auto-detect was turned off and the scale set to 100%.")
+            ui.colored_label("#d35400",
+                "set the percentage below to match RL, or tick auto-detect to try again.")
+        end
+        if hebnix.get_string("rl_ui_scale_percent", "") == "" then
+            local old = tonumber(hebnix.get_string("rl_ui_scale", ""))
+            hebnix.set("rl_ui_scale_percent",
+                string.format("%g", math.floor(((old and old > 0) and old or REFERENCE_UI_SCALE) * 1000 + 0.5) / 10))
+        end
+        ui.text_input("rl_ui_scale_percent", "RL interface scale (%)", "75")
+        ui.label("type a percentage like RL's slider: 75 = 75%, 100 = 100% (not 0.75 / 1.0).")
+        local pct = tonumber((hebnix.get_string("rl_ui_scale_percent", ""):gsub("%s*%%%s*$", "")))
+        if not pct or pct <= 0 then
+            ui.colored_label("#c0392b", "not a valid percentage, using 75%.")
+        elseif pct < 50 or pct > 100 then
+            ui.colored_label("#d35400", "RL's interface scale only goes from 50% to 100% - double check this.")
+        end
     end
 
     ui.space(8)
