@@ -77,30 +77,41 @@ local function steam_api_key() return hebnix.get_string("steam_api_key", "") end
 local function xbox_api_key() return hebnix.get_string("xbox_api_key", "") end
 
 -- ==========================================
--- Match/mutator-strip state, ported from the PlatformDisplay example
--- plugin (examples/plugins/PlatformDisplay/main.lua, sb_layout) so the
--- scoreboard slots below can react to the same things that plugin does:
--- the mutator strip covering the right edge in tournament playlists,
--- the board shifting during goal replays, and the first tab-open after
--- a match starts landing a few pixels off from every later one.
--- Declared up here (ahead of "Player tracking") since get_scoreboard_slots
--- closes over is_replay/in_first_open/shows_mutator_strip - refresh_match_
--- playlist, which needs player_order, is defined down in that section.
+-- Match state, same as the PlatformDisplay plugin - which playlist is
+-- up (mutator strip, private/offline matches), whether a goal replay is
+-- on, and the first tab-open after a match starts, which lands a few
+-- pixels off from every later one.
 -- ==========================================
 
-local is_replay = false
+local PRIVATE_PLAYLIST = 6
 local TOURNAMENT_PLAYLIST = 34
+
+local in_match = false
+local match_ended = false
+local match_guid = nil
+local is_replay = false
+local my_id = nil
+local freeplay = false
+local offline = false
 local current_playlist = nil
 local mutators = {}
 local mutator_count = 0
 local match_log_key = nil
 local first_tab_pending = true
 local in_first_open = false
+local shown_first_open = false
 local scoreboard_was_held = false
 
 local function shows_mutator_strip()
     if current_playlist == TOURNAMENT_PLAYLIST then return true end
     return mutator_count > 0
+end
+
+-- players who left only stay on the board in matchmade games, private
+-- and offline matches drop them straight away
+local function matchmade()
+    if offline then return false end
+    return current_playlist ~= nil and current_playlist ~= PRIVATE_PLAYLIST
 end
 
 -- ==========================================
@@ -111,9 +122,6 @@ end
 
 local REFERENCE_RESOLUTION = { 2560, 1440 }
 local REFERENCE_UI_SCALE = 0.75
-local ROW_HEIGHT = 56
-local BOX_SIZE = 48
-local SLOT_X = 714
 
 -- Interface Scale, read straight from the .save profile (GameplaySettingsSave_TA.UIScale)
 -- instead of asking the user to type it in. Refreshed on a timer via the
@@ -150,38 +158,6 @@ local function ui_scale()
     return value
 end
 
-local SCOREBOARD_LAYOUTS = {
-    [4] = { blue = 419, orange = 796 },
-    [3] = { blue = 528, orange = 792 },
-    [2] = { blue = 591, orange = 793 },
-    [1] = { blue = 655, orange = 794 },
-}
-
-local SCOREBOARD_UI_QUAD = {
-    x = { 8.0, -766.0, 1284.0 },
-    y = { 308.0, -559.0, 799.0 },
-    size = { 0.0, 64.0, 0.0 },
-}
-local ROW_HEIGHT_QUAD = { 88.0, -86.0, 72.0 }
-
-local EXTRA_Y_QUAD = {
-    blue = {
-        [1] = { -144.0, 180.0, -54.0 },
-        [2] = { -304.0, 380.0, -114.0 },
-        [3] = { 483.83838383838383, -1552.6363636363637, 1366.2373737373737, -355.43939393939394 },
-        [4] = { -256.0, 320.0, -96.0 },
-    },
-    orange = {
-        [1] = { 192.0, -240.0, 72.0 },
-        [2] = { 232.0, -290.0, 87.0 },
-        [3] = { 240.0, -300.0, 90.0 },
-        [4] = { 216.0, -270.0, 81.0 },
-    },
-}
-local EXTRA_X_NUDGE = {
-    blue = { [1] = 1, [2] = 1 },
-}
-
 local function quad(coefs, s)
     local result = 0.0
     for _, c in ipairs(coefs) do
@@ -211,34 +187,10 @@ local function scale_slot(x, y, w, h, ui_quad, screen_w, screen_h)
         math.max(1, round_up(w * res_scale_x)), math.max(1, round_up(h * res_scale_y))
 end
 
-local function scaled_row_height()
-    return quad(ROW_HEIGHT_QUAD, ui_scale())
-end
-
--- Fine-tuning nudges for cases the SCOREBOARD_LAYOUTS/EXTRA_Y_QUAD tables
--- don't cover on their own, ported from how the PlatformDisplay example
--- plugin's sb_layout keeps its icons aligned in the same situations:
--- the mutator strip covering the right edge (tournament playlists), the
--- board shifting during goal replays, the first tab-open after a match
--- starts landing a few pixels off from later ones, and one team having
--- more players than the other. All default to 0 (today's behaviour) -
--- tune them live in a match, they're plain screen-quad units like the
--- other sliders below.
-local function scoreboard_x_nudge()
-    local nudge = 0
-    if shows_mutator_strip() then
-        nudge = nudge + hebnix.get_number("scoreboard_x_nudge_mutator", 0)
-    end
-    if is_replay then
-        nudge = nudge + hebnix.get_number("scoreboard_x_nudge_replay", 0)
-    end
-    if in_first_open then
-        nudge = nudge + hebnix.get_number("scoreboard_x_nudge_first_open", 0)
-    end
-    return nudge
-end
-
-local PLATFORM_SB = {
+-- Scoreboard layout, same as the PlatformDisplay plugin's sb_layout.
+-- Units are 1080p scoreboard pixels, scaled by the resolution and the
+-- interface scale.
+local SB = {
     left = 537,
     blue_bottom = 67,
     orange_top = 43,
@@ -248,75 +200,63 @@ local PLATFORM_SB = {
     imbalance = 32,
     y_offcenter = 32,
 }
-local PLATFORM_MUTATOR_EDGE = 1030
-local PLATFORM_X_OFFSET = -35
-local PLATFORM_X_OFFSET_FIRST = -35
-local PLATFORM_ICON_COL = -530.5
-local PLATFORM_ICON_PX = 100
-local PLATFORM_IMAGE_SCALE = 0.48
 
-local function platform_scoreboard_layout(w, h, blues, oranges)
+local MUTATOR_EDGE = 1030
+local REPLAY_SHIFT = 0
+local X_OFFSET = -35
+local X_OFFSET_FIRST = -35
+
+local ICON_COL = -530.5
+local ICON_PX = 100
+local IMAGE_SCALE = 0.48
+local GHOST_OPACITY = 0.4
+-- tuned in a 1v0: full imbalance (32) needed a -27 y nudge
+local EMPTY_TEAM_SHIFT = 5
+-- both teams have players (1v1, 2v2, 2v1...), sat 1 unit low
+local FULL_TEAMS_SHIFT = -1
+
+local function sb_layout(w, h, scale_mult, x_offset, mutator_edge, blues, oranges, replay_shift)
     local scale
     if w / h > 1.5 then
-        scale = 0.507 * h / PLATFORM_SB.board_h
+        scale = 0.507 * h / SB.board_h
     else
-        scale = 0.615 * w / PLATFORM_SB.board_w
+        scale = 0.615 * w / SB.board_w
     end
-    local s = scale * ui_scale()
+    local s = scale * scale_mult
+
     local cx = w / 2
-    if shows_mutator_strip() then
-        local strip_cx = w - PLATFORM_MUTATOR_EDGE * s
+    if mutator_edge > 0 then
+        local strip_cx = w - mutator_edge * s
         if strip_cx < cx then cx = strip_cx end
     end
-    local x_offset = in_first_open and PLATFORM_X_OFFSET_FIRST or PLATFORM_X_OFFSET
-    cx = cx + (x_offset + scoreboard_x_nudge()) * s
-    local cy = h / 2 + PLATFORM_SB.y_offcenter * s
+    cx = cx + x_offset * s
+    cx = cx - replay_shift * s
+
+    local cy = h / 2 + SB.y_offcenter * s
+
+    -- an empty team still holds about one row on rl's board, but sits
+    -- EMPTY_TEAM_SHIFT units lower than a real 1-player row would
     local difference = blues - oranges
     local lopsided = (blues == 0) ~= (oranges == 0)
     local sign = difference >= 0 and 1 or -1
-    local adjusted_difference = difference - (lopsided and sign or 0)
-    cy = cy + PLATFORM_SB.imbalance * adjusted_difference * s
-    cy = cy + hebnix.get_number("scoreboard_imbalance_nudge", 0)
-        * adjusted_difference * s
+    cy = cy + SB.imbalance * (difference - (lopsided and sign or 0)) * s
+    if lopsided then
+        cy = cy + sign * EMPTY_TEAM_SHIFT * s
+    else
+        cy = cy + FULL_TEAMS_SHIFT * s
+    end
+
     return {
         scale = s,
-        x = cx + PLATFORM_ICON_COL * s,
-        size = PLATFORM_ICON_PX * PLATFORM_IMAGE_SCALE * s,
-        blue_y = cy + (-PLATFORM_SB.blue_bottom + 6 * (4 - blues)
-            - PLATFORM_SB.banner_distance * blues + 9) * s,
-        orange_y = cy + PLATFORM_SB.orange_top * s,
-        separation = (PLATFORM_SB.banner_distance
-            + hebnix.get_number("scoreboard_row_height_nudge", 0)) * s,
+        centre = cx,
+        size = ICON_PX * IMAGE_SCALE * s,
+        blue_y = cy + (-SB.blue_bottom + 6 * (4 - blues) - SB.banner_distance * blues + 9) * s,
+        orange_y = cy + SB.orange_top * s,
+        separation = SB.banner_distance * s,
     }
 end
 
-local function get_scoreboard_slots(team_size, other_size, screen_w, screen_h, team)
-    team_size = math.max(1, math.min(4, team_size))
-    other_size = math.max(0, math.min(4, other_size or 0))
-    local blues = team == "blue" and team_size or other_size
-    local oranges = team == "orange" and team_size or other_size
-    local layout = platform_scoreboard_layout(screen_w, screen_h, blues, oranges)
-    local manual_x = hebnix.get_number("scoreboard_" .. team .. "_x_nudge_midscale", 0)
-        * layout.scale
-    local manual_y = hebnix.get_number("scoreboard_" .. team .. "_y_nudge_midscale", 0)
-        * layout.scale
-    local row0_y = (team == "blue" and layout.blue_y or layout.orange_y) + manual_y
-    local slots = {}
-    for row = 0, team_size - 1 do
-        table.insert(slots, {
-            team = team,
-            row = row,
-            x = math.ceil(layout.x + manual_x),
-            y = math.ceil(row0_y + row * layout.separation),
-            w = math.max(1, math.ceil(layout.size)),
-            h = math.max(1, math.ceil(layout.size)),
-        })
-    end
-    return slots
-end
-
 local GOAL_NAMEPLATE_DELAY_SECONDS = 3.5
-local GOAL_NAMEPLATE_DURATION_SECONDS = 11
 local GOAL_NAMEPLATE_REFERENCE_SLOT = { 1047, 1223, 75, 75 }
 local NAMEPLATE_EXTRA_Y_QUAD = { -306.0, 382.5, -114.75 }
 local NAMEPLATE_UI_QUAD = {
@@ -329,6 +269,8 @@ local function get_goal_nameplate_slot(screen_w, screen_h)
     local x, y, w, h = GOAL_NAMEPLATE_REFERENCE_SLOT[1], GOAL_NAMEPLATE_REFERENCE_SLOT[2],
         GOAL_NAMEPLATE_REFERENCE_SLOT[3], GOAL_NAMEPLATE_REFERENCE_SLOT[4]
     y = y + quad(NAMEPLATE_EXTRA_Y_QUAD, ui_scale())
+    x = x + hebnix.get_number("goal_nameplate_x_nudge", 0)
+    y = y + hebnix.get_number("goal_nameplate_y_nudge", 0)
     return scale_slot(x, y, w, h, NAMEPLATE_UI_QUAD, screen_w, screen_h)
 end
 
@@ -336,25 +278,35 @@ end
 -- Player tracking
 -- ==========================================
 
+-- players[key] holds both the avatar lookup state and the scoreboard
+-- roster fields (order, team, ghost, left, score, shortcut). roster
+-- handling is the PlatformDisplay plugin's: players who leave stay as
+-- dimmed ghosts in matchmade games until someone takes their slot.
 local players = {}
 local player_order = {}
-local seen = {}
+local roster_seq = 0
 local pending_tracker = {} -- key -> true, players awaiting a hebnix.stats_result
 
 local last_goal = nil -- { scorer_name, scorer_key, timestamp } or nil
 
 local function refresh_match_playlist()
-    if current_playlist or #player_order == 0 then return end
     if not match_log_key then
+        hebnix.clear_launch_log()
         match_log_key = hebnix.parse_launch_log_async(false)
         return
     end
     local info = hebnix.launch_log_result(match_log_key)
     if type(info) ~= "table" then return end
     match_log_key = nil
+    if type(info.session) == "table" then my_id = info.session.primary_id end
     if type(info.game) ~= "table" then return end
     current_playlist = tonumber(info.game.playlist_id)
+    offline = info.game.offline == true
     mutators = info.game.mutators or {}
+    freeplay = false
+    for _, tag in ipairs(mutators) do
+        if tag == "Freeplay" then freeplay = true end
+    end
     mutator_count = math.max(tonumber(info.game.mutator_count) or 0, #mutators)
 end
 
@@ -364,8 +316,17 @@ local function parse_platform(pid)
     return platform:lower(), id_part
 end
 
-local function player_key(pid, name)
-    if hebnix.is_bot(pid) then
+local function is_bot_id(pid)
+    return pid == "" or hebnix.is_bot(pid)
+end
+
+-- real players are keyed by their platform id. bots (and anyone without
+-- one) have no id, so they use the per-match shortcut instead of the name:
+-- two bots or players can share a name, never a shortcut. name is only
+-- the last resort when the event carries no shortcut at all.
+local function player_key(pid, name, shortcut)
+    if is_bot_id(pid) then
+        if shortcut then return "bot|sc:" .. tostring(math.floor(shortcut)) end
         return "bot|name:" .. name
     end
     return pid
@@ -393,11 +354,13 @@ local function detect_image_ext(url, body)
         ext = ext:lower()
         if ext == "jpg" or ext == "jpeg" then return "jpg" end
         if ext == "png" then return "png" end
+        if ext == "gif" then return "gif" end
     end
     if body and #body >= 4 then
         local b1, b2, b3 = string.byte(body, 1, 3)
         if b1 == 255 and b2 == 216 and b3 == 255 then return "jpg" end
         if b1 == 137 and b2 == 80 and b3 == 78 then return "png" end
+        if b1 == 71 and b2 == 73 and b3 == 70 then return "gif" end
     end
     return "png"
 end
@@ -1056,15 +1019,19 @@ end
 local function clear_players()
     players = {}
     player_order = {}
-    seen = {}
+    roster_seq = 0
     pending_tracker = {}
     pending_requests = {}
     download_requests = {}
     pending_epic_lookups = {}
     epic_lookups_in_flight = nil
     last_goal = nil
+    in_match = false
+    match_guid = nil
     is_replay = false
     current_playlist = nil
+    offline = false
+    freeplay = false
     mutators = {}
     mutator_count = 0
     match_log_key = nil
@@ -1076,7 +1043,6 @@ end
 local function remove_player(key)
     if not players[key] then return end
     players[key] = nil
-    seen[key] = nil
     for i = #player_order, 1, -1 do
         if player_order[i] == key then
             table.remove(player_order, i)
@@ -1085,44 +1051,167 @@ local function remove_player(key)
     end
 end
 
--- Drops any disconnected player still shown on team_num - called when
--- someone new joins that team, since that's the replacement showing up.
-local function clear_disconnected_ghosts(team_num, except_key)
-    local to_remove = {}
+-- drops everyone on the scoreboard roster, test fetches stay
+local function reset_roster()
+    local keys = {}
     for _, key in ipairs(player_order) do
-        local p = players[key]
-        if p and p.disconnected and p.team_num == team_num and key ~= except_key then
-            table.insert(to_remove, key)
-        end
+        if not players[key].test then table.insert(keys, key) end
     end
-    for _, key in ipairs(to_remove) do remove_player(key) end
+    for _, key in ipairs(keys) do remove_player(key) end
+    roster_seq = 0
 end
 
-local function track_player(pid, name, team_num, shortcut)
-    if pid == "" and name == "" then return end
-    local key = player_key(pid, name)
-    if seen[key] then return end
-    seen[key] = true
-    local is_bot = hebnix.is_bot(pid)
+local function roster_entries()
+    local list = {}
+    for _, key in ipairs(player_order) do
+        local p = players[key]
+        if p and not p.test then table.insert(list, { key = key, entry = p }) end
+    end
+    return list
+end
+
+local function add_player(key, pid, name, is_bot)
     local platform, platform_id = parse_platform(pid)
+    roster_seq = roster_seq + 1
     players[key] = {
         name = name, platform = platform, platform_id = platform_id, is_bot = is_bot,
         raw_pid = pid,
         avatar_path = nil, avatar_url = nil, status = is_bot and "bot (no avatar)" or "new",
-        team_num = team_num or 0, score = 0, shortcut = shortcut or 0, disconnected = false,
+        order = roster_seq, awaiting_slot = true,
+        team = -1, score = 0, shortcut = nil, ghost = false, left = false,
     }
     table.insert(player_order, key)
     if not is_bot then resolve_avatar(key) end
-    if team_num then clear_disconnected_ghosts(team_num, key) end
+    return players[key]
 end
 
-local function update_player_state(pid, name, team_num, score, shortcut)
-    local key = player_key(pid, name)
+local function update_players(data)
+    local source = type(data) == "table" and data.Players or nil
+    if type(source) ~= "table" then return end
+
+    local game = data.Game
+    if type(game) == "table" and game.bReplay ~= nil then
+        is_replay = game.bReplay == true
+    end
+
+    -- nobody from the last update is still here, it's a different match
+    local overlap, had = 0, #roster_entries() > 0
+    for _, player in ipairs(source) do
+        local key = player_key(tostring(player.PrimaryId or ""), tostring(player.Name or "Unknown"), tonumber(player.Shortcut))
+        if players[key] and not players[key].test then overlap = overlap + 1 end
+    end
+    if had and overlap == 0 then reset_roster() end
+
+    local present = {}
+    for _, player in ipairs(source) do
+        local pid = tostring(player.PrimaryId or "")
+        local name = tostring(player.Name or "Unknown")
+        if pid ~= "" or name ~= "" then
+            local is_bot = is_bot_id(pid)
+            local key = player_key(pid, name, tonumber(player.Shortcut))
+            present[key] = true
+
+            local p = players[key]
+            if not p or p.test then p = add_player(key, pid, name, is_bot) end
+            p.name = name
+            p.score = tonumber(player.Score) or 0
+            p.shortcut = tonumber(player.Shortcut)
+
+            local reported = tonumber(player.TeamNum) or -1
+            if reported == 0 or reported == 1 then
+                p.team = reported
+                p.ghost = p.left or false
+            else
+                p.ghost = true
+            end
+        end
+    end
+
+    for _, item in ipairs(roster_entries()) do
+        if not present[item.key] then
+            if item.entry.is_bot then remove_player(item.key) else item.entry.ghost = true end
+        end
+    end
+
+    if not matchmade() then
+        for _, item in ipairs(roster_entries()) do
+            if item.entry.ghost then remove_player(item.key) end
+        end
+    end
+
+    -- someone new on a team takes the slot of that team's oldest ghost
+    local claiming = {}
+    for _, item in ipairs(roster_entries()) do
+        if item.entry.awaiting_slot and (item.entry.team == 0 or item.entry.team == 1) then
+            table.insert(claiming, item)
+        end
+    end
+    table.sort(claiming, function(a, b) return a.entry.order < b.entry.order end)
+    for _, arrival in ipairs(claiming) do
+        arrival.entry.awaiting_slot = nil
+        local oldest, oldest_key = nil, nil
+        for _, item in ipairs(roster_entries()) do
+            local e = item.entry
+            if e.ghost and e.team == arrival.entry.team and item.key ~= arrival.key
+                and (not oldest or e.order < oldest.order) then
+                oldest, oldest_key = e, item.key
+            end
+        end
+        if oldest_key then remove_player(oldest_key) end
+    end
+
+    in_match = #roster_entries() > 0
+end
+
+local function mark_left(data)
+    if type(data) ~= "table" then return end
+    local pid = tostring(data.PrimaryId or "")
+    local name = tostring(data.PlayerName or data.Name or "")
+    local key = player_key(pid, name, tonumber(data.Shortcut))
     local p = players[key]
-    if not p then return end
-    p.team_num = team_num or p.team_num
-    p.score = score or p.score
-    p.shortcut = shortcut or p.shortcut
+    if not p and is_bot_id(pid) and not tonumber(data.Shortcut) then
+        -- no id or shortcut in the event: fall back to a bot with that name
+        for _, k in ipairs(player_order) do
+            local e = players[k]
+            if e and e.is_bot and not e.left and e.name == name then
+                key, p = k, e
+                break
+            end
+        end
+    end
+    if p and not p.test then
+        p.left = true
+        p.ghost = true
+        dlog("PfpOverlayV2: PlayerLeft " .. name .. " (" .. key .. "), kept as ghost")
+    end
+end
+
+local function spectating()
+    local list = roster_entries()
+    if not my_id or my_id == "" or #list == 0 then return false end
+    for _, item in ipairs(list) do
+        local p = item.entry
+        if p.raw_pid == my_id and (p.team == 0 or p.team == 1) then return false end
+    end
+    return true
+end
+
+-- same order RL's own scoreboard uses: team, then score descending,
+-- then shortcut id descending
+local function sorted_roster()
+    local sorted = {}
+    for _, item in ipairs(roster_entries()) do table.insert(sorted, item.entry) end
+    local function team_rank(t) return t == 0 and 0 or (t == 1 and 1 or 2) end
+    table.sort(sorted, function(a, b)
+        if a.team ~= b.team then return team_rank(a.team) < team_rank(b.team) end
+        if a.score ~= b.score then return a.score > b.score end
+        if a.shortcut and b.shortcut and a.shortcut ~= b.shortcut then
+            return a.shortcut > b.shortcut
+        end
+        if a.raw_pid ~= b.raw_pid then return a.raw_pid > b.raw_pid end
+        return a.order < b.order
+    end)
+    return sorted
 end
 
 -- ==========================================
@@ -1143,53 +1232,74 @@ function plugin.on_load()
 end
 
 function plugin.on_game_event(event_type, event)
+    local data = event and event.data or {}
+    local guid = event and (event.match_guid or event.MatchGuid)
+    if guid and guid ~= "" and guid ~= match_guid then
+        match_guid = guid
+        reset_roster()
+    end
+
     if event_type == "UpdateState" then
-        for _, p in ipairs(event.data.Players or {}) do
-            local pid = p.PrimaryId or ""
-            local name = p.Name or "Unknown"
-            if pid ~= "" or name ~= "" then
-                track_player(pid, name, p.TeamNum, p.Shortcut)
-                update_player_state(pid, name, p.TeamNum, p.Score, p.Shortcut)
-            end
-        end
-        local game = event.data.Game
-        if game and game.bReplay ~= nil then
-            is_replay = game.bReplay
-        end
+        update_players(data)
     elseif event_type == "PlayerLeft" then
-        -- keep them tracked but marked disconnected instead of removing
-        -- outright - draw_scoreboard_avatars renders them at the bottom
-        -- row of the next team size up, same spot RL's own scoreboard
-        -- leaves a departed player. clear_disconnected_ghosts drops them
-        -- for good once someone new takes their place on that team.
-        local pid = event.data.PrimaryId or ""
-        local name = event.data.PlayerName or event.data.Name or ""
-        local key = player_key(pid, name)
-        local p = players[key]
-        if p then
-            p.disconnected = true
-            dlog("PfpOverlayV2: PlayerLeft " .. name .. " (" .. key .. "), marked disconnected")
-        end
+        mark_left(data)
     elseif event_type == "GoalScored" then
-        local scorer_name = event.data.Scorer and event.data.Scorer.Name or ""
+        local scorer_name = data.Scorer and data.Scorer.Name or ""
         local scorer_key = nil
-        for _, key in ipairs(player_order) do
-            if players[key].name == scorer_name then
-                scorer_key = key
-                break
+        local scorer = type(data.Scorer) == "table" and data.Scorer or {}
+        local scorer_pid = tostring(scorer.PrimaryId or "")
+        local scorer_sc = tonumber(scorer.Shortcut)
+        local scorer_team = tonumber(scorer.TeamNum)
+        -- platform id first, then the per-match shortcut, name last (names
+        -- repeat between players, so it also has to agree on team)
+        if scorer_pid ~= "" and players[scorer_pid] then scorer_key = scorer_pid end
+        if not scorer_key and scorer_sc then
+            for _, key in ipairs(player_order) do
+                if players[key].shortcut == scorer_sc then
+                    scorer_key = key
+                    break
+                end
             end
+        end
+        if not scorer_key then
+            local fallback = nil
+            for _, key in ipairs(player_order) do
+                local e = players[key]
+                if e.name == scorer_name then
+                    if scorer_team == nil or e.team == scorer_team then
+                        scorer_key = key
+                        break
+                    end
+                    fallback = fallback or key
+                end
+            end
+            scorer_key = scorer_key or fallback
         end
         last_goal = { scorer_name = scorer_name, scorer_key = scorer_key, timestamp = os.time() }
         dlog("PfpOverlayV2: GoalScored by " .. scorer_name .. " (matched key: " .. tostring(scorer_key) .. ")")
-    elseif event_type == "GameLeft" or event_type == "MatchEnded" then
-        clear_players()
     elseif event_type == "MatchCreated" or event_type == "MatchInitialized" then
+        in_match = true
+        match_ended = false
         current_playlist = nil
+        offline = false
         mutators = {}
         mutator_count = 0
         match_log_key = nil
+        reset_roster()
         first_tab_pending = true
         in_first_open = false
+    elseif event_type == "RoundStarted" or event_type == "CountdownBegin" then
+        in_match = true
+        match_ended = false
+    elseif event_type == "GoalReplayStart" then
+        is_replay = true
+    elseif event_type == "GoalReplayEnd" then
+        is_replay = false
+    elseif event_type == "MatchEnded" then
+        match_ended = true
+    elseif event_type == "GameLeft" or event_type == "MatchDestroyed" then
+        match_ended = false
+        clear_players()
     end
 end
 
@@ -1204,6 +1314,36 @@ local capturing_bind = false
 
 local scoreboard_held = false
 local scoreboard_capturing_bind = false
+
+-- fade the scoreboard out instead of hard-cutting it when the button's
+-- released, same idea as ingame_rank's vanish animation
+local SCOREBOARD_FADE_SECONDS = 0.3
+local scoreboard_fade_was_held = false
+local scoreboard_fade_from = nil
+
+-- 1.0 while held, ramps down to 0 over SCOREBOARD_FADE_SECONDS after
+-- release, nil once the fade's finished (or it was never shown yet) -
+-- callers use nil to mean "don't draw". scoreboard_fade_was_held is its
+-- own flag, separate from scoreboard_was_held above (that one drives the
+-- first-tab-open detection in on_tick, this one just tracks the fade).
+local function scoreboard_fade_opacity()
+    if scoreboard_held then
+        scoreboard_fade_was_held = true
+        scoreboard_fade_from = nil
+        return 1.0
+    end
+    if scoreboard_fade_was_held then
+        scoreboard_fade_was_held = false
+        scoreboard_fade_from = hebnix.monotonic_seconds()
+    end
+    if not scoreboard_fade_from then return nil end
+    local elapsed = hebnix.monotonic_seconds() - scoreboard_fade_from
+    if elapsed >= SCOREBOARD_FADE_SECONDS then
+        scoreboard_fade_from = nil
+        return nil
+    end
+    return 1.0 - elapsed / SCOREBOARD_FADE_SECONDS
+end
 
 -- bumped each time "use own id" forces a fresh value into the override
 -- id text_input (see on_settings)
@@ -1252,44 +1392,35 @@ function plugin.on_tick()
         end
     end
 
-    refresh_match_playlist()
-    if scoreboard_held and not scoreboard_was_held then
-        in_first_open = first_tab_pending
-        first_tab_pending = false
-    elseif not scoreboard_held then
-        in_first_open = false
+    if in_match and not current_playlist then refresh_match_playlist() end
+
+    if in_match then
+        if scoreboard_held and not scoreboard_was_held then
+            in_first_open = first_tab_pending
+            first_tab_pending = false
+        elseif not scoreboard_held then
+            in_first_open = false
+        end
+        scoreboard_was_held = scoreboard_held
     end
-    scoreboard_was_held = scoreboard_held
 end
 
--- Returns each team's active (still-connected) roster, plus at most one
--- disconnected "ghost" player per team, kept separate from the active
--- list so a departed player never affects the other players' rows.
-local function scoreboard_teams()
-    local blue, orange = {}, {}
-    local blue_ghost, orange_ghost = nil, nil
-    for _, pid in ipairs(player_order) do
-        local p = players[pid]
-        local is_orange = p.team_num == 1
-        if p.disconnected then
-            if is_orange then orange_ghost = pid else blue_ghost = pid end
-        elseif is_orange then
-            table.insert(orange, pid)
-        else
-            table.insert(blue, pid)
-        end
+-- what the scoreboard pass did last frame, for the debug overlay
+local sb_gate = "not drawn yet"
+local sb_screen = nil
+
+-- Avatars are drawn over a black box the same size as the slot, so
+-- transparent pixels (PNGs with alpha, round PSN avatars, GIF gaps) show
+-- black instead of the scoreboard behind them.
+local function draw_avatar(draw, path, x, y, w, h, alpha)
+    alpha = alpha or 1
+    local a = math.max(0, math.min(255, math.floor(255 * alpha + 0.5)))
+    draw.rect(x, y, w, h, { color = string.format("#000000%02x", a), filled = true })
+    if alpha < 1 then
+        draw.image(path, x, y, w, h, { opacity = alpha })
+    else
+        draw.image(path, x, y, w, h)
     end
-    -- same order RL's own scoreboard uses: score descending, and when
-    -- scores tie (usually 0-0 early in a match) it falls back to each
-    -- player's shortcut id, also descending.
-    local function by_score_desc(a, b)
-        local pa, pb = players[a], players[b]
-        if pa.score ~= pb.score then return pa.score > pb.score end
-        return (pa.shortcut or 0) > (pb.shortcut or 0)
-    end
-    table.sort(blue, by_score_desc)
-    table.sort(orange, by_score_desc)
-    return blue, orange, blue_ghost, orange_ghost
 end
 
 local function draw_debug_stack(draw)
@@ -1301,71 +1432,172 @@ local function draw_debug_stack(draw)
     draw.text(AVATAR_START_X, AVATAR_START_Y - 36,
         "pfpoverlayv2 debug overlay  —  is_replay=" .. tostring(is_replay) .. "  last_goal=" .. goal_age,
         { color = "#00ff00ff", size = 16 })
+    -- everything draw_scoreboard_avatars checks before drawing
+    draw.text(AVATAR_START_X, AVATAR_START_Y - 18,
+        "in_match=" .. tostring(in_match) .. "  match_ended=" .. tostring(match_ended)
+            .. "  freeplay=" .. tostring(freeplay) .. "  scoreboard_held=" .. tostring(scoreboard_held)
+            .. "  playlist=" .. tostring(current_playlist) .. "  ui_scale=" .. tostring(ui_scale())
+            .. "  screen=" .. (sb_screen or "?") .. "  scoreboard: " .. sb_gate,
+        { color = "#00ff00ff", size = 16 })
     for _, pid in ipairs(player_order) do
         local p = players[pid]
         local tag = hebnix.platform_tag(p.raw_pid or pid)
         if p.avatar_path then
             pcall(function()
-                draw.image(p.avatar_path, AVATAR_START_X, y, AVATAR_SIZE, AVATAR_SIZE)
+                draw_avatar(draw, p.avatar_path, AVATAR_START_X, y, AVATAR_SIZE, AVATAR_SIZE)
             end)
         end
-        local team_label = (p.team_num == 1) and "orange" or "blue"
-        local disc_tag = p.disconnected and " [disconnected]" or ""
+        local team_label = p.team == 1 and "orange" or (p.team == 0 and "blue" or "none")
+        local disc_tag = p.ghost and " [ghost]" or ""
         draw.text(AVATAR_START_X + AVATAR_SIZE + 8, y + AVATAR_SIZE / 2 - 8,
             tag .. " " .. p.name .. "  [" .. team_label .. " " .. tostring(p.score) .. "]" .. disc_tag ..
                 "  —  " .. p.status,
             { color = "#ffffffff", size = 14 })
+        if not p.test then
+            draw.text(AVATAR_START_X + AVATAR_SIZE + 8, y + AVATAR_SIZE / 2 + 8,
+                "scoreboard: " .. (p.sb_info or "not drawn"),
+                { color = "#ffff00ff", size = 14 })
+        end
         y = y + AVATAR_SIZE + AVATAR_GAP
     end
 end
 
--- Draws one team's rows using ONLY that team's own size - a 1-player
--- team next to a 2-player team (unfair exhibition modes, or a real
--- match down to fewer active players) each get their own real layout
--- instead of both being forced to match the bigger side.
-local function draw_team_avatars(draw, team_color, list, ghost, other_size, w, h)
-    local size = #list
-    local layout_size = size + (ghost and 1 or 0)
-    if layout_size == 0 then return end
-    for _, slot in ipairs(get_scoreboard_slots(layout_size, other_size, w, h, team_color)) do
-        if slot.row < size then
-            local p = players[list[slot.row + 1]]
-            if p and p.avatar_path then
-                pcall(function() draw.image(p.avatar_path, slot.x, slot.y, slot.w, slot.h) end)
-            end
-        elseif ghost and slot.row == size then
-            local p = players[ghost]
-            if p and p.avatar_path then
-                pcall(function() draw.image(p.avatar_path, slot.x, slot.y, slot.w, slot.h) end)
-            end
+local last_layout = nil
+
+local function last_layout_readout()
+    if not last_layout then return "No frame drawn yet, hold the scoreboard once." end
+    return string.format(
+        "%dv%d, %d ghost, %d listed, 1 unit = %.2f px, pfp %.0f px, blue row1 %.0f%s%s",
+        last_layout.blues or 0, last_layout.oranges or 0,
+        last_layout.ghosts or 0, #roster_entries(),
+        last_layout.scale, last_layout.size, last_layout.blue_y,
+        last_layout.first_open and " (first open)" or "",
+        last_layout.replay and " (replay)" or "")
+        .. (last_layout.watching and " (spectating)" or "")
+end
+
+-- same drawing as the PlatformDisplay plugin, with each player's pfp in
+-- place of the platform icon
+-- soft dark edge around a pfp, built from a few thin rings that fade toward
+-- the middle so it also bleeds a little way into the image itself
+local VIGNETTE_RINGS = 8
+local VIGNETTE_DEPTH = 0.3 -- of the pfp size
+
+local function draw_vignette(draw, x, y, size, strength, alpha)
+    local depth = size * VIGNETTE_DEPTH
+    local thick = depth / VIGNETTE_RINGS
+    for i = 0, VIGNETTE_RINGS - 1 do
+        local fade = (1 - i / VIGNETTE_RINGS) ^ 1.5
+        local a = math.floor(255 * strength * fade * alpha + 0.5)
+        if a > 0 then
+            local inset = i * thick + thick / 2
+            draw.rect(x + inset, y + inset, size - inset * 2, size - inset * 2,
+                { color = string.format("#000000%02x", math.min(a, 255)), border = thick + 0.5 })
         end
     end
 end
 
 local function draw_scoreboard_avatars(draw, w, h)
-    if not scoreboard_held then return end
-    local blue, orange, blue_ghost, orange_ghost = scoreboard_teams()
-    if #blue == 0 and #orange == 0 and not blue_ghost and not orange_ghost then return end
+    sb_screen = string.format("%dx%d", w, h)
+    for _, key in ipairs(player_order) do players[key].sb_info = nil end
+    if not in_match then sb_gate = "skipped, not in match" return end
+    if match_ended then sb_gate = "skipped, match ended" return end
+    if freeplay then sb_gate = "skipped, freeplay" return end
+    local list = sorted_roster()
+    if #list == 0 then sb_gate = "skipped, empty roster" return end
 
-    local blue_size = #blue + (blue_ghost and 1 or 0)
-    local orange_size = #orange + (orange_ghost and 1 or 0)
-    draw_team_avatars(draw, "blue", blue, blue_ghost, orange_size, w, h)
-    draw_team_avatars(draw, "orange", orange, orange_ghost, blue_size, w, h)
+    if scoreboard_held then shown_first_open = in_first_open end
+    local opacity = scoreboard_fade_opacity()
+    if not opacity then sb_gate = "hidden, scoreboard not held" return end
+    sb_gate = "drawing"
+
+    local hide_self = hebnix.get_bool("scoreboard_hide_self", false)
+    local show_ghosts = hebnix.get_bool("scoreboard_show_ghosts", true)
+    local vignette = hebnix.get_bool("scoreboard_vignette", false)
+        and hebnix.get_number("scoreboard_vignette_strength", 60) / 100 or 0
+    local scale_mult = ui_scale() * hebnix.get_number("scoreboard_display_scale", 100) / 100
+
+    local blues, oranges, ghosts = 0, 0, 0
+    for _, p in ipairs(list) do
+        if p.team == 0 then
+            blues = blues + 1
+        elseif p.team == 1 then
+            oranges = oranges + 1
+        end
+        if p.ghost then ghosts = ghosts + 1 end
+    end
+
+    local mutator_edge = shows_mutator_strip()
+        and hebnix.get_number("scoreboard_mutator_edge", MUTATOR_EDGE) or 0
+    local x_offset = shown_first_open
+        and hebnix.get_number("scoreboard_x_offset_first", X_OFFSET_FIRST)
+        or hebnix.get_number("scoreboard_x_offset", X_OFFSET)
+    local replay_shift = is_replay
+        and hebnix.get_number("scoreboard_replay_shift", REPLAY_SHIFT) or 0
+    local layout = sb_layout(w, h, scale_mult, x_offset, mutator_edge, blues, oranges, replay_shift)
+    local y_nudge = hebnix.get_number("scoreboard_y_nudge", 0) * layout.scale
+    local pfp_x = layout.centre
+        + hebnix.get_number("scoreboard_icon_x", ICON_COL) * layout.scale
+    layout.first_open = shown_first_open
+    layout.replay = is_replay
+    layout.blues = blues
+    layout.oranges = oranges
+    layout.ghosts = ghosts
+    layout.watching = spectating()
+    last_layout = layout
+
+    local blue_row, orange_row = -1, -1
+    for _, p in ipairs(list) do
+        if p.team == 0 then
+            blue_row = blue_row + 1
+        elseif p.team == 1 then
+            orange_row = orange_row + 1
+        else
+            p.sb_info = "skipped, no team"
+            goto continue
+        end
+        if p.is_bot then
+            p.sb_info = "skipped, bot"
+        elseif not p.avatar_path then
+            p.sb_info = "skipped, no avatar yet"
+        elseif p.ghost and not show_ghosts then
+            p.sb_info = "skipped, ghost hidden"
+        elseif hide_self and my_id ~= nil and p.raw_pid == my_id then
+            p.sb_info = "skipped, own pfp hidden"
+        end
+        if not p.is_bot and p.avatar_path
+            and (show_ghosts or not p.ghost)
+            and not (hide_self and my_id ~= nil and p.raw_pid == my_id) then
+            local y = y_nudge + (p.team == 0
+                and layout.blue_y + layout.separation * blue_row
+                or layout.orange_y + layout.separation * orange_row)
+            local alpha = p.ghost and opacity * GHOST_OPACITY or opacity
+            local ok, err = pcall(function()
+                draw_avatar(draw, p.avatar_path, pfp_x, y, layout.size, layout.size, alpha)
+                if vignette > 0 then
+                    draw_vignette(draw, pfp_x, y, layout.size, vignette, alpha)
+                end
+            end)
+            p.sb_info = string.format("x=%.0f y=%.0f size=%.0f alpha=%.2f%s",
+                pfp_x, y, layout.size, alpha, ok and "" or ("  draw failed: " .. tostring(err)))
+        end
+        ::continue::
+    end
 end
 
 local function draw_goal_nameplate(draw, w, h)
     if not last_goal then return end
+    -- stays up for the whole replay and goes away when it ends or is skipped
+    -- (GoalReplayEnd), replays aren't a fixed length
     local elapsed = os.time() - last_goal.timestamp
-    local in_delay_window = elapsed >= GOAL_NAMEPLATE_DELAY_SECONDS
-        and elapsed < (GOAL_NAMEPLATE_DELAY_SECONDS + GOAL_NAMEPLATE_DURATION_SECONDS)
-    if not (in_delay_window and is_replay) then return end
+    if not (is_replay and elapsed >= GOAL_NAMEPLATE_DELAY_SECONDS) then return end
 
     local p = last_goal.scorer_key and players[last_goal.scorer_key]
     if not p or not p.avatar_path then return end
 
     local x, y, w2, h2 = get_goal_nameplate_slot(w, h)
     pcall(function()
-        draw.image(p.avatar_path, x, y, w2, h2)
+        draw_avatar(draw, p.avatar_path, x, y, w2, h2)
     end)
 end
 
@@ -1441,6 +1673,14 @@ function plugin.on_settings(ui)
                 end
             end
         end)
+    end
+
+    ui.space(4)
+    ui.checkbox("scoreboard_show_ghosts", "Show players who left, dimmed", true)
+    ui.checkbox("scoreboard_hide_self", "Hide my own pfp", false)
+    ui.checkbox("scoreboard_vignette", "Vignette around pfps (dark soft edge)", false)
+    if hebnix.get_bool("scoreboard_vignette", false) then
+        ui.slider("scoreboard_vignette_strength", "Vignette strength", 10, 100, 60)
     end
 
     ui.space(12)
@@ -1609,10 +1849,9 @@ function plugin.on_settings(ui)
                     name = identifier, platform = test_platform, platform_id = identifier,
                     raw_pid = "Test|" .. identifier .. "|0", is_bot = false,
                     avatar_path = nil, avatar_url = nil, status = "new",
-                    team_num = 0, score = 0,
+                    test = true, team = -1, score = 0,
                 }
                 table.insert(player_order, key)
-                seen[key] = true
             end
             local p = players[key]
             p.avatar_path = nil
@@ -1674,7 +1913,7 @@ function plugin.on_settings(ui)
             elseif p.avatar_url then
                 ui.image(p.avatar_url, { width = 32, height = 32 })
             end
-            local disc_tag = p.disconnected and " [disconnected]" or ""
+            local disc_tag = p.ghost and " [ghost]" or ""
             ui.label(tag .. " " .. p.name .. disc_tag .. "  —  " .. p.status)
             if ui.button("copy id") then
                 ui.copy_to_clipboard(id_str)
@@ -1720,22 +1959,23 @@ function plugin.on_settings(ui)
 
     ui.space(12)
     ui.colored_label("#aaaaaa", "Advanced alignment")
-    ui.label("Nudges for cases the built-in layout doesn't cover on its")
-    ui.label("own - mutator strip, replay board shift, first tab-open,")
-    ui.label("and uneven team sizes. All default to 0 (no change). Same")
-    ui.label("idea as PlatformDisplay's alignment sliders - tune live.")
+    ui.label("Same sliders as the PlatformDisplay plugin.")
     ui.label("Mutators: " .. mutator_count
         .. (#mutators > 0 and " (" .. table.concat(mutators, ", ") .. ")" or "")
-        .. (shows_mutator_strip() and ", strip shown" or ""))
-    ui.slider("scoreboard_x_nudge_mutator", "X nudge, mutator strip shown", -250, 250, 0)
-    ui.slider("scoreboard_x_nudge_replay", "X nudge, goal replay", -250, 250, 0)
-    ui.slider("scoreboard_x_nudge_first_open", "X nudge, first tab-open", -250, 250, 0)
-    ui.slider("scoreboard_imbalance_nudge", "Y nudge per player of team-size difference", -50, 50, 0)
-    ui.slider("scoreboard_orange_y_nudge_midscale", "Orange row 0 Y nudge", -150, 150, 0)
-    ui.slider("scoreboard_blue_y_nudge_midscale", "Blue row 0 Y nudge", -150, 150, 0)
-    ui.slider("scoreboard_blue_x_nudge_midscale", "Blue row 0 X nudge", -150, 150, 0)
-    ui.slider("scoreboard_orange_x_nudge_midscale", "Orange row 0 X nudge", -150, 150, 0)
-    ui.slider("scoreboard_row_height_nudge", "Row spacing nudge (row 1, row 2, ...)", -150, 150, 0)
+        .. (shows_mutator_strip() and ", board shifted" or ""))
+    ui.label("Display scale has no home in the save, match it to the game.")
+    ui.slider("scoreboard_display_scale", "Display scale", 90, 100, 100)
+    ui.label("Below are 1080p pixels, they scale with the resolution.")
+    ui.label("Set X offset in a plain match first, the strip edge only bites when it overlaps.")
+    ui.slider("scoreboard_x_offset", "X offset", -250, 250, X_OFFSET)
+    ui.slider("scoreboard_x_offset_first", "X offset, first tab", -250, 250, X_OFFSET_FIRST)
+    ui.slider("scoreboard_mutator_edge", "Mutator strip edge", 800, 1300, MUTATOR_EDGE)
+    ui.slider("scoreboard_replay_shift", "Replay board shift", -250, 250, REPLAY_SHIFT)
+    ui.slider("scoreboard_icon_x", "Pfp column", -700, -300, ICON_COL)
+    ui.slider("scoreboard_y_nudge", "Y nudge", -100, 100, 0)
+    ui.label(last_layout_readout())
+    ui.slider("goal_nameplate_x_nudge", "Goal replay nameplate X nudge", -250, 250, 0)
+    ui.slider("goal_nameplate_y_nudge", "Goal replay nameplate Y nudge", -250, 250, 0)
     end)
 end
 
